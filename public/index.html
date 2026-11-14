@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Montage Studio — macOS Video Editor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Google+Sans+Mono:wght@400;500;600&family=Google+Sans:wght@400;500;600;700&family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <!-- Missing FFmpeg Warning Banner -->
+  <div id="ffmpegBanner" class="system-banner hidden" role="alert">
+    <span class="material-symbols-rounded">warning</span>
+    <span id="ffmpegBannerText">FFmpeg / FFprobe not found. Install via <code>brew install ffmpeg</code> and restart.</span>
+  </div>
+
+  <!-- Top Application Toolbar -->
+  <header class="top-toolbar">
+    <div class="toolbar-left">
+      <div class="brand-chip">
+        <span class="material-symbols-rounded brand-icon">movie_edit</span>
+        <span class="brand-title">Montage Studio</span>
+      </div>
+      <div class="project-pill">
+        <span id="activeProjectName" class="project-name-label">Loading...</span>
+        <button id="projectsBtn" class="btn btn-tonal btn-sm" title="Switch or manage projects">
+          <span class="material-symbols-rounded">folder_open</span>
+          <span>Projects</span>
+        </button>
+      </div>
+      <div id="saveStatusBadge" class="save-badge saved" title="Auto-saves 2s after edits">
+        <span class="material-symbols-rounded save-icon">cloud_done</span>
+        <span id="saveStatusText">Saved</span>
+      </div>
+    </div>
+
+    <div class="toolbar-center">
+      <button id="undoBtn" class="icon-btn" title="Undo (Cmd+Z)" disabled>
+        <span class="material-symbols-rounded">undo</span>
+      </button>
+      <button id="redoBtn" class="icon-btn" title="Redo (Cmd+Shift+Z)" disabled>
+        <span class="material-symbols-rounded">redo</span>
+      </button>
+      <div class="toolbar-divider"></div>
+      <button id="snapToggleBtn" class="btn btn-toggle active" title="Magnetic Snapping (~8px)">
+        <span class="material-symbols-rounded">magnet</span>
+        <span>Snap</span>
+      </button>
+      <button id="rippleSyncBtn" class="btn btn-toggle" title="Ripple-Sync Audio Tracks 2 & 3 with Track 1 edits">
+        <span class="material-symbols-rounded">link</span>
+        <span>Ripple-Sync Audio</span>
+      </button>
+    </div>
+
+    <div class="toolbar-right">
+      <button id="themeToggleBtn" class="icon-btn" title="Toggle Day / Night Mode">
+        <span id="themeIcon" class="material-symbols-rounded">light_mode</span>
+      </button>
+      <button id="exportModalBtn" class="btn btn-primary">
+        <span class="material-symbols-rounded">ios_share</span>
+        <span>Export MP4</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Upper Split Workspace -->
+  <main class="studio-main">
+    <section class="upper-split">
+      <!-- Left 30%: Sources Media Bin -->
+      <aside class="sources-panel">
+        <div class="panel-header">
+          <div class="panel-title-group">
+            <span class="material-symbols-rounded">perm_media</span>
+            <h2>Sources</h2>
+            <span id="sourceCountPill" class="count-pill">0</span>
+          </div>
+          <div class="panel-actions">
+            <button id="verifySourcesBtn" class="icon-btn icon-btn-sm" title="Verify external linked files">
+              <span class="material-symbols-rounded">fact_check</span>
+            </button>
+            <button id="addFromDiskBtn" class="btn btn-tonal btn-sm" title="Browse macOS folders (~/Downloads)">
+              <span class="material-symbols-rounded">add</span>
+              <span>Add from Disk</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Finder Drag-and-Drop Dropzone -->
+        <div id="finderDropZone" class="finder-dropzone">
+          <span class="material-symbols-rounded drop-icon">drive_folder_upload</span>
+          <div class="drop-copy">
+            <strong>Drop from macOS Finder</strong>
+            <span>Up to 10 clips (.mp4, .mov, .mkv, .wav, .mp3, .m4a)</span>
+          </div>
+          <input
+            id="finderFileInput"
+            type="file"
+            multiple
+            accept=".mp4,.mov,.mkv,.wav,.mp3,.m4a"
+            class="hidden"
+          />
+        </div>
+
+        <div id="sourcesList" class="sources-list">
+          <div class="empty-hint">No media in this project yet. Drop files from Finder or click "+ Add from Disk".</div>
+        </div>
+      </aside>
+
+      <!-- Right 70%: Preview Monitor + Stereo VU Meter + Transport -->
+      <section class="preview-panel">
+        <div class="monitor-row">
+          <div class="stage-wrapper">
+            <div id="previewStage" class="preview-stage">
+              <video id="videoPlayerA" class="stage-video active" playsinline preload="auto"></video>
+              <video id="videoPlayerB" class="stage-video" playsinline preload="auto"></video>
+              <div id="previewEmptyOverlay" class="preview-empty">
+                <span class="material-symbols-rounded">videocam_off</span>
+                <p>Track 1 is empty — drag a video clip from Sources to Track 1</p>
+              </div>
+              <div id="previewClipBadge" class="preview-clip-badge hidden"></div>
+            </div>
+          </div>
+
+          <!-- Stereo L/R Peak VU Meter -->
+          <div class="vu-panel" title="Live Stereo Peak / VU Meter">
+            <span class="vu-label">VU</span>
+            <canvas id="vuMeterCanvas" width="54" height="260"></canvas>
+            <div class="vu-channels">
+              <span>L</span>
+              <span>R</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Transport Bar -->
+        <div class="transport-bar">
+          <div class="timecode-box">
+            <span id="currentTimecode" class="timecode-main">00:00:00:00</span>
+            <span class="timecode-sep">/</span>
+            <span id="totalTimecode" class="timecode-total">00:00:00:00</span>
+            <span id="frameCounterBadge" class="frame-badge">Frame 0</span>
+          </div>
+
+          <div class="transport-controls">
+            <button id="jumpStartBtn" class="icon-btn" title="Jump to Start (Home)">
+              <span class="material-symbols-rounded">skip_previous</span>
+            </button>
+            <button id="stepBackBtn" class="btn btn-outlined btn-sm" title="Step -1 Frame (Left Arrow)">
+              <span class="material-symbols-rounded">chevron_left</span>
+              <span>-1f</span>
+            </button>
+            <button id="playPauseBtn" class="btn btn-primary btn-play" title="Play / Pause (Space)">
+              <span id="playPauseIcon" class="material-symbols-rounded">play_arrow</span>
+            </button>
+            <button id="stepForwardBtn" class="btn btn-outlined btn-sm" title="Step +1 Frame (Right Arrow)">
+              <span>+1f</span>
+              <span class="material-symbols-rounded">chevron_right</span>
+            </button>
+            <div class="toolbar-divider"></div>
+            <button id="splitBtn" class="btn btn-tonal btn-sm" title="Split Selected or Playhead Clip (S)">
+              <span class="material-symbols-rounded">content_cut</span>
+              <span>Split (S)</span>
+            </button>
+          </div>
+
+          <div class="transport-meta">
+            <span class="fps-pill">1920×1080 • 24 fps</span>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <!-- Selected Clip Inspector Bar -->
+    <section id="clipInspector" class="inspector-bar">
+      <div class="inspector-empty" id="inspectorEmpty">
+        <span class="material-symbols-rounded">tune</span>
+        <span>Select any clip on Track 1, 2, or 3 to adjust speed, reverse, volume, or fades.</span>
+      </div>
+
+      <div class="inspector-controls hidden" id="inspectorControls">
+        <div class="inspector-ident">
+          <span id="inspectorTrackBadge" class="track-pill">V1</span>
+          <strong id="inspectorClipName" class="inspector-title">Clip</strong>
+          <span id="inspectorClipRange" class="inspector-sub">0f → 120f</span>
+        </div>
+
+        <!-- Video Speed & Reverse (Track 1 only) -->
+        <div id="videoInspectorGroup" class="inspector-group hidden">
+          <label class="ctrl-label">
+            <span>Speed</span>
+            <select id="speedPresetSelect" class="select-sm">
+              <option value="0.25">0.25x</option>
+              <option value="0.5">0.5x</option>
+              <option value="0.75">0.75x</option>
+              <option value="1">1.0x</option>
+              <option value="1.5">1.5x</option>
+              <option value="2">2.0x</option>
+              <option value="4">4.0x</option>
+              <option value="custom">Custom</option>
+            </select>
+          </label>
+          <input
+            id="speedFineInput"
+            type="number"
+            min="0.25"
+            max="4"
+            step="0.05"
+            value="1"
+            class="input-num-sm"
+            title="Fine playback speed (0.25x to 4.0x)"
+          />
+          <button id="reverseToggleBtn" class="btn btn-toggle btn-sm" title="Toggle Reverse Playback">
+            <span class="material-symbols-rounded">replay</span>
+            <span>Reverse</span>
+          </button>
+        </div>
+
+        <!-- Audio Volume & Fades (Track 2/3, or Track 1 with embedded audio) -->
+        <div id="audioInspectorGroup" class="inspector-group hidden">
+          <label class="ctrl-label">
+            <span class="material-symbols-rounded">volume_up</span>
+            <input id="volumeRange" type="range" min="0" max="200" step="1" value="100" />
+            <span id="volumeLabel" class="val-readout">100%</span>
+          </label>
+          <label class="ctrl-label" title="Fade-In (0.1s step)">
+            <span>Fade In</span>
+            <input id="fadeInInput" type="number" min="0" max="60" step="0.1" value="0.0" class="input-num-sm" />
+            <span class="unit-label">s</span>
+          </label>
+          <label class="ctrl-label" title="Fade-Out (0.1s step)">
+            <span>Fade Out</span>
+            <input id="fadeOutInput" type="number" min="0" max="60" step="0.1" value="0.0" class="input-num-sm" />
+            <span class="unit-label">s</span>
+          </label>
+        </div>
+
+        <div class="inspector-actions">
+          <button id="deleteClipBtn" class="btn btn-danger btn-sm" title="Delete Selected Clip (Delete / Backspace)">
+            <span class="material-symbols-rounded">delete</span>
+            <span>Delete</span>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Bottom Workspace: 3-Track Timeline Editor -->
+    <section class="timeline-section">
+      <div class="timeline-toolbar">
+        <div class="timeline-toolbar-left">
+          <span class="material-symbols-rounded">view_timeline</span>
+          <span class="timeline-title">Timeline (24 fps Magnetic &amp; Audio Layers)</span>
+        </div>
+        <div class="timeline-toolbar-right">
+          <button id="zoomFitBtn" class="btn btn-outlined btn-sm" title="Fit entire project in timeline">
+            <span class="material-symbols-rounded">fit_screen</span>
+            <span>Fit</span>
+          </button>
+          <span class="material-symbols-rounded zoom-icon">zoom_out</span>
+          <input id="zoomSlider" type="range" min="0" max="100" value="35" class="zoom-slider" title="Playhead-centered zoom (Cmd+Wheel)" />
+          <span class="material-symbols-rounded zoom-icon">zoom_in</span>
+          <span id="zoomScaleLabel" class="zoom-readout">4.0 px/f</span>
+        </div>
+      </div>
+
+      <div class="timeline-body">
+        <!-- Track Headers -->
+        <div class="track-headers">
+          <div class="ruler-corner">TC 24fps</div>
+          <div class="track-header track-header-v1">
+            <span class="track-badge badge-v1">V1</span>
+            <div class="track-header-meta">
+              <strong>Video Track 1</strong>
+              <small>Magnetic Ripple</small>
+            </div>
+          </div>
+          <div class="track-header track-header-a1">
+            <span class="track-badge badge-a1">A1</span>
+            <div class="track-header-meta">
+              <strong>Audio Track 2</strong>
+              <small>Free (Music / Stems)</small>
+            </div>
+          </div>
+          <div class="track-header track-header-a2">
+            <span class="track-badge badge-a2">A2</span>
+            <div class="track-header-meta">
+              <strong>Audio Track 3</strong>
+              <small>Free (Voice / SFX)</small>
+            </div>
+          </div>
+        </div>
+
+        <!-- Scrollable Timeline Canvas -->
+        <div id="timelineViewport" class="timeline-viewport">
+          <div id="timelineInner" class="timeline-inner">
+            <canvas id="timelineRuler" class="timeline-ruler" height="28"></canvas>
+
+            <div id="track1Lane" class="track-lane track-lane-v1" data-track="track1">
+              <div class="lane-drop-hint">Drop Video Clips Here (Sequential Magnetic Track)</div>
+            </div>
+            <div id="track2Lane" class="track-lane track-lane-a1" data-track="track2">
+              <div class="lane-drop-hint">Drop Audio Track 1 (Suno / Music)</div>
+            </div>
+            <div id="track3Lane" class="track-lane track-lane-a2" data-track="track3">
+              <div class="lane-drop-hint">Drop Audio Track 2 (Gemini Voice / SFX)</div>
+            </div>
+
+            <div id="snapGuideLine" class="snap-guide hidden"></div>
+            <div id="playheadEl" class="playhead">
+              <div class="playhead-cap"></div>
+              <div class="playhead-stem"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Modal 1: Projects Hub & Switcher -->
+  <div id="projectsModal" class="modal-backdrop hidden">
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <div class="modal-title-row">
+          <span class="material-symbols-rounded">workspaces</span>
+          <h3>Projects Hub</h3>
+        </div>
+        <button id="closeProjectsModalBtn" class="icon-btn icon-btn-sm" title="Close">
+          <span class="material-symbols-rounded">close</span>
+        </button>
+      </div>
+      <div class="modal-body">
+        <form id="createProjectForm" class="create-project-row">
+          <input
+            id="newProjectNameInput"
+            type="text"
+            placeholder="New project name (e.g., Tokyo Cyber Montage)..."
+            class="input-text"
+            required
+          />
+          <button type="submit" class="btn btn-primary">
+            <span class="material-symbols-rounded">add_circle</span>
+            <span>Create Project</span>
+          </button>
+        </form>
+        <div class="projects-storage-note">
+          <span class="material-symbols-rounded">hard_drive</span>
+          <span>Isolated workspaces stored in <code>~/Documents/MontageStudio/projects/</code> • Clones use APFS hardlinks (zero extra disk space)</span>
+        </div>
+        <div id="projectsList" class="projects-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 2: macOS Folder Browser (Add from Disk / Relocate Missing) -->
+  <div id="fsBrowserModal" class="modal-backdrop hidden">
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <div class="modal-title-row">
+          <span class="material-symbols-rounded">folder</span>
+          <h3 id="fsBrowserTitle">Add Media from macOS Disk</h3>
+        </div>
+        <button id="closeFsBrowserBtn" class="icon-btn icon-btn-sm" title="Close">
+          <span class="material-symbols-rounded">close</span>
+        </button>
+      </div>
+      <div class="modal-body fs-browser-body">
+        <div id="fsShortcuts" class="fs-shortcuts"></div>
+        <div class="fs-path-bar">
+          <button id="fsUpBtn" class="icon-btn icon-btn-sm" title="Parent folder">
+            <span class="material-symbols-rounded">arrow_upward</span>
+          </button>
+          <span id="fsCurrentPath" class="fs-current-path">/Users/...</span>
+        </div>
+        <div id="fsEntriesList" class="fs-entries-list"></div>
+      </div>
+      <div class="modal-footer">
+        <span id="fsSelectionInfo" class="fs-selection-info">0 selected (max 10 clips)</span>
+        <div class="modal-footer-actions">
+          <button id="fsCancelBtn" class="btn btn-outlined">Cancel</button>
+          <button id="fsConfirmBtn" class="btn btn-primary" disabled>Link Selected</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 3: Export MP4 Settings & Progress -->
+  <div id="exportModal" class="modal-backdrop hidden">
+    <div class="modal-card modal-md">
+      <div class="modal-header">
+        <div class="modal-title-row">
+          <span class="material-symbols-rounded">movie</span>
+          <h3>Export Final Montage (1920×1080 • 24 fps)</h3>
+        </div>
+        <button id="closeExportModalBtn" class="icon-btn icon-btn-sm" title="Close">
+          <span class="material-symbols-rounded">close</span>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="export-form">
+          <label class="field-group">
+            <span>Output File Name</span>
+            <input id="exportFilenameInput" type="text" class="input-text" placeholder="my_montage" />
+          </label>
+          <div class="field-row">
+            <label class="field-group">
+              <span>Video Codec</span>
+              <select id="exportCodecSelect" class="input-select">
+                <option value="h264">H.264 (Universal MP4)</option>
+                <option value="h265">H.265 / HEVC (QuickTime hvc1)</option>
+              </select>
+            </label>
+            <label class="field-group">
+              <span>Compression Quality</span>
+              <select id="exportQualitySelect" class="input-select">
+                <option value="high">High (VT q:v 75 / CRF 18–20)</option>
+                <option value="medium">Medium (VT q:v 60 / CRF 23–25)</option>
+                <option value="low">Low (VT q:v 45 / CRF 28–30)</option>
+              </select>
+            </label>
+          </div>
+          <div id="exportEncoderNote" class="encoder-chip">
+            <span class="material-symbols-rounded">memory</span>
+            <span id="exportEncoderText">Checking VideoToolbox hardware support...</span>
+          </div>
+        </div>
+
+        <div id="exportProgressArea" class="export-progress hidden">
+          <div class="progress-header">
+            <span id="exportStatusText">Rendering with FFmpeg...</span>
+            <strong id="exportPercentText">0%</strong>
+          </div>
+          <div class="progress-track">
+            <div id="exportProgressBar" class="progress-fill" style="width: 0%"></div>
+          </div>
+          <div id="exportDoneActions" class="export-done-actions hidden">
+            <a id="exportDownloadLink" href="#" class="btn btn-primary" download>
+              <span class="material-symbols-rounded">download</span>
+              <span>Download MP4</span>
+            </a>
+            <span id="exportSavedPathNote" class="export-saved-note"></span>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="cancelExportBtn" class="btn btn-outlined">Close</button>
+        <button id="startExportBtn" class="btn btn-primary">
+          <span class="material-symbols-rounded">rocket_launch</span>
+          <span>Start Export</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notifications -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

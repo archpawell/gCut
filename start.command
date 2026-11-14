@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
+
+chmod +x "$0" 2>/dev/null || true
+
+PORT="${PORT:-3456}"
+URL="http://localhost:${PORT}"
+
+if lsof -iTCP:"${PORT}" -sTCP:LISTEN -t >/dev/null 2>&1; then
+  echo "Montage Studio is already running on ${URL}"
+  open "${URL}"
+  exit 0
+fi
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "Error: Node.js is not installed. Install with: brew install node"
+  read -r -p "Press Enter to exit..."
+  exit 1
+fi
+
+if [ ! -d "node_modules" ]; then
+  echo "Installing dependencies..."
+  npm install
+fi
+
+(
+  for _ in $(seq 1 40); do
+    if curl -s "${URL}/api/system/status" >/dev/null 2>&1; then
+      open "${URL}"
+      break
+    fi
+    sleep 0.25
+  done
+) &
+
+echo "Starting Montage Studio on ${URL}..."
+exec node server.js
