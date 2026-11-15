@@ -155,7 +155,7 @@
                 <span class="material-symbols-rounded">tune</span>
                 <span class="cg-title">Color</span>
               </div>
-              <button id="cgResetAllBtn" type="button" class="btn btn-outlined btn-xs" title="Reset Exposure, Saturation, Contrast to 0" disabled>Reset</button>
+              <button id="cgResetAllBtn" type="button" class="btn btn-outlined btn-xs" title="Reset Exposure, Saturation, Contrast, Hue, Red, Green, Blue to 0" disabled>Reset</button>
             </div>
             <div id="cgClipTargetLabel" class="cg-clip-target">No video clip</div>
 
@@ -192,6 +192,54 @@
                 <div class="cg-slider-row">
                   <span class="cg-sign">−</span>
                   <input id="cgContrastSlider" class="cg-slider" type="range" min="-100" max="100" step="1" value="0" title="Double-click to reset Contrast to 0" disabled />
+                  <span class="cg-sign">+</span>
+                </div>
+              </div>
+
+              <div class="cg-group">
+                <div class="cg-label-row">
+                  <label for="cgHueSlider">Hue</label>
+                  <span id="cgHueVal" class="cg-val-badge">0°</span>
+                </div>
+                <div class="cg-slider-row">
+                  <span class="cg-sign">−</span>
+                  <input id="cgHueSlider" class="cg-slider" type="range" min="-180" max="180" step="1" value="0" title="Double-click to reset Hue to 0°" disabled />
+                  <span class="cg-sign">+</span>
+                </div>
+              </div>
+
+              <div class="cg-group">
+                <div class="cg-label-row">
+                  <label for="cgRedSlider">Red</label>
+                  <span id="cgRedVal" class="cg-val-badge">0</span>
+                </div>
+                <div class="cg-slider-row">
+                  <span class="cg-sign">−</span>
+                  <input id="cgRedSlider" class="cg-slider" type="range" min="-100" max="100" step="1" value="0" title="Double-click to reset Red to 0" disabled />
+                  <span class="cg-sign">+</span>
+                </div>
+              </div>
+
+              <div class="cg-group">
+                <div class="cg-label-row">
+                  <label for="cgGreenSlider">Green</label>
+                  <span id="cgGreenVal" class="cg-val-badge">0</span>
+                </div>
+                <div class="cg-slider-row">
+                  <span class="cg-sign">−</span>
+                  <input id="cgGreenSlider" class="cg-slider" type="range" min="-100" max="100" step="1" value="0" title="Double-click to reset Green to 0" disabled />
+                  <span class="cg-sign">+</span>
+                </div>
+              </div>
+
+              <div class="cg-group">
+                <div class="cg-label-row">
+                  <label for="cgBlueSlider">Blue</label>
+                  <span id="cgBlueVal" class="cg-val-badge">0</span>
+                </div>
+                <div class="cg-slider-row">
+                  <span class="cg-sign">−</span>
+                  <input id="cgBlueSlider" class="cg-slider" type="range" min="-100" max="100" step="1" value="0" title="Double-click to reset Blue to 0" disabled />
                   <span class="cg-sign">+</span>
                 </div>
               </div>
@@ -448,9 +496,16 @@
           <span class="material-symbols-rounded">folder</span>
           <h3 id="fsBrowserTitle">Add Media from macOS Disk</h3>
         </div>
-        <button id="closeFsBrowserBtn" class="icon-btn icon-btn-sm" title="Close">
-          <span class="material-symbols-rounded">close</span>
-        </button>
+        <div class="fs-header-actions">
+          <div class="fs-sort-toggle" role="group" aria-label="Sort mode">
+            <span class="fs-sort-label">Sort:</span>
+            <button id="fsSortDateBtn" type="button" class="fs-sort-btn active" title="Sort all folders and files by Change Date (Newest First)">Change Date</button>
+            <button id="fsSortAlphaBtn" type="button" class="fs-sort-btn" title="Group folders first (A–Z), then files (A–Z)">Alphabetical</button>
+          </div>
+          <button id="closeFsBrowserBtn" class="icon-btn icon-btn-sm" title="Close">
+            <span class="material-symbols-rounded">close</span>
+          </button>
+        </div>
       </div>
       <div class="modal-body fs-browser-body">
         <div id="fsShortcuts" class="fs-shortcuts"></div>
@@ -669,6 +724,18 @@
 
   <!-- Toast Notifications -->
   <div id="toastContainer" class="toast-container"></div>
+
+  <!-- Persistent Per-Player RGB feColorMatrix Filters -->
+  <svg style="position:absolute;width:0;height:0;pointer-events:none" aria-hidden="true">
+    <defs>
+      <filter id="clip-rgb-filter-a" color-interpolation-filters="sRGB">
+        <feColorMatrix id="clipRgbMatrixA" type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 1 0" />
+      </filter>
+      <filter id="clip-rgb-filter-b" color-interpolation-filters="sRGB">
+        <feColorMatrix id="clipRgbMatrixB" type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 1 0" />
+      </filter>
+    </defs>
+  </svg>
 
   <script src="/app.js"></script>
 </body>

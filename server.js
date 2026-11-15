@@ -184,6 +184,11 @@ function clampColorGrade(val) {
   return Math.max(-100, Math.min(100, n));
 }
 
+function clampHueGrade(val) {
+  const n = Math.round(Number(val) || 0);
+  return Math.max(-180, Math.min(180, n));
+}
+
 function getTransitionNetDelta(type) {
   if (type === 'transform') return -1;
   if (type === 'fade_black' || type === 'fade_white') return 1;
@@ -209,6 +214,10 @@ function resolveTrack1LayoutAndTransitions(track1, rawTransitions) {
       exposure: clampColorGrade(clip.exposure),
       saturation: clampColorGrade(clip.saturation),
       contrast: clampColorGrade(clip.contrast),
+      hue: clampHueGrade(clip.hue),
+      red: clampColorGrade(clip.red),
+      green: clampColorGrade(clip.green),
+      blue: clampColorGrade(clip.blue),
       durationFrames,
       leftTransitionFrames: 0,
       rightTransitionFrames: 0,
@@ -312,6 +321,10 @@ function normalizeProjectData(project) {
         exposure: clampColorGrade(c.exposure),
         saturation: clampColorGrade(c.saturation),
         contrast: clampColorGrade(c.contrast),
+        hue: clampHueGrade(c.hue),
+        red: clampColorGrade(c.red),
+        green: clampColorGrade(c.green),
+        blue: clampColorGrade(c.blue),
       }))
     : [];
   project.tracks.track2 = Array.isArray(project.tracks.track2) ? project.tracks.track2 : [];
@@ -770,24 +783,36 @@ app.get('/api/fs/browse', (req, res) => {
       const fullPath = path.join(resolvedDir, entry.name);
       try {
         const stat = fs.statSync(fullPath);
+        const changeMs = Math.max(Number(stat.mtimeMs) || 0, Number(stat.ctimeMs) || 0);
         if (stat.isDirectory()) {
-          directories.push({ name: entry.name, path: fullPath });
+          directories.push({
+            name: entry.name,
+            path: fullPath,
+            isDirectory: true,
+            changeMs,
+          });
         } else if (stat.isFile() && hasAllowedExtension(entry.name)) {
           files.push({
             name: entry.name,
             path: fullPath,
+            isDirectory: false,
             ext: path.extname(entry.name).toLowerCase(),
             size: stat.size,
+            changeMs,
             mtime: stat.mtime.toISOString(),
           });
         }
       } catch {
-        // Ignore unreadable permission-locked items
+        // Ignore unreadable permission-locked items or broken symlinks
       }
     }
 
-    directories.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
-    files.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+    const cmpAlpha = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+    directories.sort(cmpAlpha);
+    files.sort(cmpAlpha);
+    const combinedEntries = [...directories, ...files].sort(
+      (a, b) => (b.changeMs - a.changeMs) || cmpAlpha(a, b)
+    );
 
     const parentDir = path.dirname(resolvedDir);
     const home = os.homedir();
@@ -803,6 +828,7 @@ app.get('/api/fs/browse', (req, res) => {
       currentDir: resolvedDir,
       parentDir: parentDir !== resolvedDir ? parentDir : null,
       shortcuts,
+      entries: combinedEntries,
       directories,
       files,
     });
@@ -1634,6 +1660,10 @@ function buildExportPipeline(project, pathsObj, options) {
     const exposure = clampColorGrade(clip.exposure);
     const saturation = clampColorGrade(clip.saturation);
     const contrast = clampColorGrade(clip.contrast);
+    const hue = clampHueGrade(clip.hue);
+    const red = clampColorGrade(clip.red);
+    const green = clampColorGrade(clip.green);
+    const blue = clampColorGrade(clip.blue);
     if (exposure !== 0) {
       const expFactor = (1 + exposure / 100).toFixed(3);
       parts.push(
@@ -1645,6 +1675,18 @@ function buildExportPipeline(project, pathsObj, options) {
       const conFactor = (1 + contrast / 100).toFixed(3);
       const satFactor = (1 + saturation / 100).toFixed(3);
       parts.push(`eq=contrast=${conFactor}:saturation=${satFactor}`);
+    }
+    if (hue !== 0) {
+      parts.push(`hue=h=${hue}`);
+    }
+    if (red !== 0 || green !== 0 || blue !== 0) {
+      const rGain = Math.max(0, 1 + red / 100);
+      const gGain = Math.max(0, 1 + green / 100);
+      const bGain = Math.max(0, 1 + blue / 100);
+      parts.push(
+        `colorchannelmixer=rr=${rGain.toFixed(3)}:gg=${gGain.toFixed(3)}:bb=${bGain.toFixed(3)}`,
+        'format=yuv420p'
+      );
     }
     const tailPad = clip.speed < 1 ? Math.ceil(1 / clip.speed) + 1 : 1;
     parts.push(

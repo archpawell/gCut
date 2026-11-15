@@ -55,6 +55,9 @@
     fsCurrentDir: '',
     fsParentDir: null,
     fsSelectedPaths: [],
+    fsSortMode: 'date', // 'date' (Change Date Newest First) | 'alpha' (Folders A-Z, Files A-Z)
+    fsDirectories: [],
+    fsFiles: [],
 
     // Drag / trim interaction state
     dragSourceId: null,
@@ -117,6 +120,16 @@
     cgSaturationVal: document.getElementById('cgSaturationVal'),
     cgContrastSlider: document.getElementById('cgContrastSlider'),
     cgContrastVal: document.getElementById('cgContrastVal'),
+    cgHueSlider: document.getElementById('cgHueSlider'),
+    cgHueVal: document.getElementById('cgHueVal'),
+    cgRedSlider: document.getElementById('cgRedSlider'),
+    cgRedVal: document.getElementById('cgRedVal'),
+    cgGreenSlider: document.getElementById('cgGreenSlider'),
+    cgGreenVal: document.getElementById('cgGreenVal'),
+    cgBlueSlider: document.getElementById('cgBlueSlider'),
+    cgBlueVal: document.getElementById('cgBlueVal'),
+    clipRgbMatrixA: document.getElementById('clipRgbMatrixA'),
+    clipRgbMatrixB: document.getElementById('clipRgbMatrixB'),
     vuMeterCanvas: document.getElementById('vuMeterCanvas'),
 
     currentTimecode: document.getElementById('currentTimecode'),
@@ -169,6 +182,8 @@
 
     fsBrowserModal: document.getElementById('fsBrowserModal'),
     fsBrowserTitle: document.getElementById('fsBrowserTitle'),
+    fsSortDateBtn: document.getElementById('fsSortDateBtn'),
+    fsSortAlphaBtn: document.getElementById('fsSortAlphaBtn'),
     closeFsBrowserBtn: document.getElementById('closeFsBrowserBtn'),
     fsShortcuts: document.getElementById('fsShortcuts'),
     fsUpBtn: document.getElementById('fsUpBtn'),
@@ -301,9 +316,32 @@
     return Math.max(-100, Math.min(100, n));
   }
 
+  function clampHueGrade(val) {
+    const n = Math.round(Number(val) || 0);
+    return Math.max(-180, Math.min(180, n));
+  }
+
   function formatSignedGrade(val) {
     const v = clampColorGrade(val);
     return v > 0 ? `+${v}` : String(v);
+  }
+
+  function formatSignedHue(val) {
+    const v = clampHueGrade(val);
+    return `${v > 0 ? `+${v}` : String(v)}°`;
+  }
+
+  function isClipColorDefault(clip) {
+    if (!clip) return true;
+    return (
+      clampColorGrade(clip.exposure) === 0 &&
+      clampColorGrade(clip.saturation) === 0 &&
+      clampColorGrade(clip.contrast) === 0 &&
+      clampHueGrade(clip.hue) === 0 &&
+      clampColorGrade(clip.red) === 0 &&
+      clampColorGrade(clip.green) === 0 &&
+      clampColorGrade(clip.blue) === 0
+    );
   }
 
   function normalizeProjectModel(project) {
@@ -318,6 +356,10 @@
           exposure: clampColorGrade(c.exposure),
           saturation: clampColorGrade(c.saturation),
           contrast: clampColorGrade(c.contrast),
+          hue: clampHueGrade(c.hue),
+          red: clampColorGrade(c.red),
+          green: clampColorGrade(c.green),
+          blue: clampColorGrade(c.blue),
         }))
       : [];
     project.tracks.track2 = Array.isArray(project.tracks.track2) ? project.tracks.track2 : [];
@@ -1444,12 +1486,157 @@
   // -------------------------------------------------------------------------
   // macOS Folder Browser Modal (Add from Disk / Relocate Missing)
   // -------------------------------------------------------------------------
+  function formatFsChangeDate(ms) {
+    const n = Number(ms) || 0;
+    if (!n) return '';
+    const d = new Date(n);
+    if (Number.isNaN(d.getTime())) return '';
+    const pad = (v) => String(v).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  function syncFsSortButtons() {
+    const isDate = state.fsSortMode !== 'alpha';
+    if (el.fsSortDateBtn) el.fsSortDateBtn.classList.toggle('active', isDate);
+    if (el.fsSortAlphaBtn) el.fsSortAlphaBtn.classList.toggle('active', !isDate);
+  }
+
+  function renderFsEntriesList() {
+    el.fsEntriesList.innerHTML = '';
+
+    // Always pin ".." parent navigation at the top regardless of sort mode
+    if (state.fsParentDir) {
+      const parentRow = document.createElement('div');
+      parentRow.className = 'fs-entry fs-entry-parent';
+      parentRow.dataset.path = state.fsParentDir;
+      parentRow.innerHTML = `
+        <div class="fs-entry-left">
+          <span class="material-symbols-rounded" style="color:var(--accent-amber)">drive_folder_upload</span>
+          <span class="fs-entry-name">..</span>
+        </div>
+        <div class="fs-entry-right">
+          <span class="fs-entry-meta">Parent Folder</span>
+        </div>
+      `;
+      parentRow.onclick = () => loadFsDirectory(state.fsParentDir);
+      el.fsEntriesList.appendChild(parentRow);
+    }
+
+    const cmpAlpha = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+    let orderedEntries = [];
+    if (state.fsSortMode === 'alpha') {
+      const dirsSorted = [...state.fsDirectories].sort(cmpAlpha);
+      const filesSorted = [...state.fsFiles].sort(cmpAlpha);
+      orderedEntries = [...dirsSorted, ...filesSorted];
+    } else {
+      orderedEntries = [...state.fsDirectories, ...state.fsFiles].sort((a, b) => {
+        const diff = (Number(b.changeMs) || 0) - (Number(a.changeMs) || 0);
+        if (diff !== 0) return diff;
+        return cmpAlpha(a, b);
+      });
+    }
+
+    if (orderedEntries.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'empty-hint';
+      empty.textContent = 'No subfolders or supported media files in this directory.';
+      el.fsEntriesList.appendChild(empty);
+      updateFsFooter();
+      return;
+    }
+
+    for (const item of orderedEntries) {
+      const dateStr = formatFsChangeDate(item.changeMs);
+      if (item.isDirectory) {
+        const row = document.createElement('div');
+        row.className = 'fs-entry';
+        row.dataset.path = item.path;
+        row.innerHTML = `
+          <div class="fs-entry-left">
+            <span class="material-symbols-rounded" style="color:var(--accent-amber)">folder</span>
+            <span class="fs-entry-name">${escapeHtml(item.name)}</span>
+          </div>
+          <div class="fs-entry-right">
+            ${dateStr ? `<span class="fs-entry-date">${escapeHtml(dateStr)}</span>` : ''}
+            <span class="fs-entry-meta">Folder</span>
+          </div>
+        `;
+        row.onclick = () => loadFsDirectory(item.path);
+        el.fsEntriesList.appendChild(row);
+      } else {
+        const isSelected = state.fsSelectedPaths.includes(item.path);
+        const row = document.createElement('div');
+        row.className = `fs-entry${isSelected ? ' selected' : ''}`;
+        row.dataset.path = item.path;
+        const isVideo = ['.mp4', '.mov', '.mkv'].includes(item.ext);
+        row.innerHTML = `
+          <div class="fs-entry-left">
+            <input type="checkbox" class="fs-entry-checkbox" ${isSelected ? 'checked' : ''} aria-label="Select ${escapeHtml(item.name)}" />
+            <span class="material-symbols-rounded" style="color:${isVideo ? 'var(--accent-blue)' : 'var(--accent-green)'}">
+              ${isVideo ? 'movie' : 'audiotrack'}
+            </span>
+            <span class="fs-entry-name">${escapeHtml(item.name)}</span>
+          </div>
+          <div class="fs-entry-right">
+            ${dateStr ? `<span class="fs-entry-date">${escapeHtml(dateStr)}</span>` : ''}
+            <span class="fs-entry-meta">${formatBytes(item.size)}</span>
+          </div>
+        `;
+
+        const checkbox = row.querySelector('.fs-entry-checkbox');
+        const toggleSelection = () => {
+          if (state.fsMode === 'relink') {
+            state.fsSelectedPaths = [item.path];
+            Array.from(el.fsEntriesList.children).forEach((c) => {
+              c.classList.remove('selected');
+              const cb = c.querySelector('.fs-entry-checkbox');
+              if (cb) cb.checked = false;
+            });
+            row.classList.add('selected');
+            if (checkbox) checkbox.checked = true;
+          } else {
+            const idx = state.fsSelectedPaths.indexOf(item.path);
+            if (idx >= 0) {
+              state.fsSelectedPaths.splice(idx, 1);
+              row.classList.remove('selected');
+              if (checkbox) checkbox.checked = false;
+            } else {
+              if (state.fsSelectedPaths.length >= MAX_IMPORT_BATCH) {
+                if (checkbox) checkbox.checked = false;
+                showToast(`Maximum ${MAX_IMPORT_BATCH} clips can be imported at once.`, 'warn');
+                return;
+              }
+              state.fsSelectedPaths.push(item.path);
+              row.classList.add('selected');
+              if (checkbox) checkbox.checked = true;
+            }
+          }
+          updateFsFooter();
+        };
+
+        row.onclick = (ev) => {
+          if (ev.target === checkbox) return;
+          toggleSelection();
+        };
+        if (checkbox) {
+          checkbox.onclick = (ev) => ev.stopPropagation();
+          checkbox.onchange = toggleSelection;
+        }
+        el.fsEntriesList.appendChild(row);
+      }
+    }
+
+    updateFsFooter();
+  }
+
   async function loadFsDirectory(dirPath = '') {
     const query = dirPath ? `?dir=${encodeURIComponent(dirPath)}` : '';
     const data = await apiJson(`/api/fs/browse${query}`);
     state.fsCurrentDir = data.currentDir;
     state.fsParentDir = data.parentDir;
     state.fsSelectedPaths = [];
+    state.fsDirectories = (data.directories || []).map((d) => ({ ...d, isDirectory: true }));
+    state.fsFiles = (data.files || []).map((f) => ({ ...f, isDirectory: false }));
 
     el.fsCurrentPath.textContent = data.currentDir;
     el.fsUpBtn.disabled = !data.parentDir;
@@ -1463,65 +1650,7 @@
       el.fsShortcuts.appendChild(btn);
     }
 
-    el.fsEntriesList.innerHTML = '';
-    for (const dir of data.directories || []) {
-      const row = document.createElement('div');
-      row.className = 'fs-entry';
-      row.innerHTML = `
-        <div class="fs-entry-left">
-          <span class="material-symbols-rounded" style="color:var(--accent-amber)">folder</span>
-          <span class="fs-entry-name">${escapeHtml(dir.name)}</span>
-        </div>
-        <span class="fs-entry-meta">Folder</span>
-      `;
-      row.onclick = () => loadFsDirectory(dir.path);
-      el.fsEntriesList.appendChild(row);
-    }
-
-    for (const file of data.files || []) {
-      const row = document.createElement('div');
-      row.className = 'fs-entry';
-      row.dataset.path = file.path;
-      const isVideo = ['.mp4', '.mov', '.mkv'].includes(file.ext);
-      row.innerHTML = `
-        <div class="fs-entry-left">
-          <span class="material-symbols-rounded" style="color:${isVideo ? 'var(--accent-blue)' : 'var(--accent-green)'}">
-            ${isVideo ? 'movie' : 'audiotrack'}
-          </span>
-          <span class="fs-entry-name">${escapeHtml(file.name)}</span>
-        </div>
-        <span class="fs-entry-meta">${formatBytes(file.size)}</span>
-      `;
-
-      row.onclick = () => {
-        if (state.fsMode === 'relink') {
-          state.fsSelectedPaths = [file.path];
-          Array.from(el.fsEntriesList.children).forEach((c) => c.classList.remove('selected'));
-          row.classList.add('selected');
-        } else {
-          const idx = state.fsSelectedPaths.indexOf(file.path);
-          if (idx >= 0) {
-            state.fsSelectedPaths.splice(idx, 1);
-            row.classList.remove('selected');
-          } else {
-            if (state.fsSelectedPaths.length >= MAX_IMPORT_BATCH) {
-              showToast(`Maximum ${MAX_IMPORT_BATCH} clips can be imported at once.`, 'warn');
-              return;
-            }
-            state.fsSelectedPaths.push(file.path);
-            row.classList.add('selected');
-          }
-        }
-        updateFsFooter();
-      };
-      el.fsEntriesList.appendChild(row);
-    }
-
-    if (data.directories.length === 0 && data.files.length === 0) {
-      el.fsEntriesList.innerHTML = '<div class="empty-hint">No subfolders or supported media files in this directory.</div>';
-    }
-
-    updateFsFooter();
+    renderFsEntriesList();
   }
 
   function updateFsFooter() {
@@ -1540,6 +1669,8 @@
   function openFsBrowser(mode = 'link', relinkSourceId = null) {
     state.fsMode = mode;
     state.relinkSourceId = relinkSourceId;
+    state.fsSortMode = 'date';
+    syncFsSortButtons();
     el.fsBrowserTitle.textContent = mode === 'relink' ? 'Relocate Missing Media File' : 'Add Media from macOS Disk';
     el.fsBrowserModal.classList.remove('hidden');
     loadFsDirectory(state.systemStatus.downloadsDir || '').catch((err) => showToast(err.message, 'error'));
@@ -1584,6 +1715,10 @@
       exposure: 0,
       saturation: 0,
       contrast: 0,
+      hue: 0,
+      red: 0,
+      green: 0,
+      blue: 0,
       timelineStartFrame: Math.max(0, Math.round(dropFrame)),
       volume: 1.0,
       fadeInSec: 0.0,
@@ -1711,6 +1846,10 @@
           exposure: clampColorGrade(clip.exposure),
           saturation: clampColorGrade(clip.saturation),
           contrast: clampColorGrade(clip.contrast),
+          hue: clampHueGrade(clip.hue),
+          red: clampColorGrade(clip.red),
+          green: clampColorGrade(clip.green),
+          blue: clampColorGrade(clip.blue),
         }
       : {};
 
@@ -2645,21 +2784,35 @@
   }
 
   function renderColorGradingPanel() {
+    const sliders = [
+      el.cgExposureSlider,
+      el.cgSaturationSlider,
+      el.cgContrastSlider,
+      el.cgHueSlider,
+      el.cgRedSlider,
+      el.cgGreenSlider,
+      el.cgBlueSlider,
+    ];
     if (!el.cgExposureSlider || !el.cgSaturationSlider || !el.cgContrastSlider) return;
+
     const target = getColorGradeTargetClip();
     if (!target || !target.clip) {
       state.lastRenderedColorClipId = null;
       if (el.cgClipTargetLabel) el.cgClipTargetLabel.textContent = 'No video clip';
-      el.cgExposureSlider.value = '0';
-      el.cgSaturationSlider.value = '0';
-      el.cgContrastSlider.value = '0';
-      el.cgExposureSlider.disabled = true;
-      el.cgSaturationSlider.disabled = true;
-      el.cgContrastSlider.disabled = true;
+      for (const s of sliders) {
+        if (s) {
+          s.value = '0';
+          s.disabled = true;
+        }
+      }
       if (el.cgResetAllBtn) el.cgResetAllBtn.disabled = true;
       if (el.cgExposureVal) el.cgExposureVal.textContent = '0';
       if (el.cgSaturationVal) el.cgSaturationVal.textContent = '0';
       if (el.cgContrastVal) el.cgContrastVal.textContent = '0';
+      if (el.cgHueVal) el.cgHueVal.textContent = '0°';
+      if (el.cgRedVal) el.cgRedVal.textContent = '0';
+      if (el.cgGreenVal) el.cgGreenVal.textContent = '0';
+      if (el.cgBlueVal) el.cgBlueVal.textContent = '0';
       return;
     }
 
@@ -2668,23 +2821,36 @@
     const exp = clampColorGrade(clip.exposure);
     const sat = clampColorGrade(clip.saturation);
     const con = clampColorGrade(clip.contrast);
+    const hue = clampHueGrade(clip.hue);
+    const red = clampColorGrade(clip.red);
+    const green = clampColorGrade(clip.green);
+    const blue = clampColorGrade(clip.blue);
 
     if (el.cgClipTargetLabel) {
       el.cgClipTargetLabel.textContent = source ? source.name : 'Track 1 Clip';
       el.cgClipTargetLabel.title = el.cgClipTargetLabel.textContent;
     }
 
-    el.cgExposureSlider.disabled = false;
-    el.cgSaturationSlider.disabled = false;
-    el.cgContrastSlider.disabled = false;
+    for (const s of sliders) {
+      if (s) s.disabled = false;
+    }
     el.cgExposureSlider.value = String(exp);
     el.cgSaturationSlider.value = String(sat);
     el.cgContrastSlider.value = String(con);
+    if (el.cgHueSlider) el.cgHueSlider.value = String(hue);
+    if (el.cgRedSlider) el.cgRedSlider.value = String(red);
+    if (el.cgGreenSlider) el.cgGreenSlider.value = String(green);
+    if (el.cgBlueSlider) el.cgBlueSlider.value = String(blue);
+
     if (el.cgExposureVal) el.cgExposureVal.textContent = formatSignedGrade(exp);
     if (el.cgSaturationVal) el.cgSaturationVal.textContent = formatSignedGrade(sat);
     if (el.cgContrastVal) el.cgContrastVal.textContent = formatSignedGrade(con);
+    if (el.cgHueVal) el.cgHueVal.textContent = formatSignedHue(hue);
+    if (el.cgRedVal) el.cgRedVal.textContent = formatSignedGrade(red);
+    if (el.cgGreenVal) el.cgGreenVal.textContent = formatSignedGrade(green);
+    if (el.cgBlueVal) el.cgBlueVal.textContent = formatSignedGrade(blue);
     if (el.cgResetAllBtn) {
-      el.cgResetAllBtn.disabled = exp === 0 && sat === 0 && con === 0;
+      el.cgResetAllBtn.disabled = isClipColorDefault(clip);
     }
   }
 
@@ -2749,33 +2915,50 @@
     }
   }
 
-  function buildClipCssFilter(clip) {
-    if (!clip) return '';
+  function updateSlotSvgMatrix(slot, clip) {
+    const playerKey = String(slot || 'A').toLowerCase() === 'b' ? 'b' : 'a';
+    const matrixEl = playerKey === 'b' ? el.clipRgbMatrixB : el.clipRgbMatrixA;
+    if (!matrixEl) return;
+    const red = clip ? clampColorGrade(clip.red) : 0;
+    const green = clip ? clampColorGrade(clip.green) : 0;
+    const blue = clip ? clampColorGrade(clip.blue) : 0;
+    const rGain = Math.max(0, 1 + red / 100);
+    const gGain = Math.max(0, 1 + green / 100);
+    const bGain = Math.max(0, 1 + blue / 100);
+    matrixEl.setAttribute(
+      'values',
+      `${rGain} 0 0 0 0  0 ${gGain} 0 0 0  0 0 ${bGain} 0 0  0 0 0 1 0`
+    );
+  }
+
+  function buildClipCssFilter(clip, slot = 'A') {
+    const playerKey = String(slot || 'A').toLowerCase() === 'b' ? 'b' : 'a';
+    updateSlotSvgMatrix(slot, clip);
+    if (!clip || isClipColorDefault(clip)) return '';
     const exposure = clampColorGrade(clip.exposure);
     const saturation = clampColorGrade(clip.saturation);
     const contrast = clampColorGrade(clip.contrast);
-    if (exposure === 0 && saturation === 0 && contrast === 0) return '';
+    const hue = clampHueGrade(clip.hue);
     const expGain = Math.max(0.05, 1 + exposure / 100);
     const satGain = Math.max(0, 1 + saturation / 100);
     const conGain = Math.max(0, 1 + contrast / 100);
-    return `brightness(${expGain}) contrast(${conGain}) saturate(${satGain})`;
+    return `brightness(${expGain}) contrast(${conGain}) saturate(${satGain}) hue-rotate(${hue}deg) url(#clip-rgb-filter-${playerKey})`;
   }
 
   function applyLiveColorFilterToActiveSlots(clip) {
     if (!clip) return;
-    const filterCss = buildClipCssFilter(clip);
     if (state.slotState.A.clipId === clip.id) {
-      el.videoPlayerA.style.filter = filterCss;
+      el.videoPlayerA.style.filter = buildClipCssFilter(clip, 'A');
     }
     if (state.slotState.B.clipId === clip.id) {
-      el.videoPlayerB.style.filter = filterCss;
+      el.videoPlayerB.style.filter = buildClipCssFilter(clip, 'B');
     }
   }
 
   function applyVideoSlotMirror(slot, clip) {
     const player = slot === 'A' ? el.videoPlayerA : el.videoPlayerB;
     player.style.transform = clip && clip.mirrored ? 'scaleX(-1)' : '';
-    player.style.filter = buildClipCssFilter(clip);
+    player.style.filter = buildClipCssFilter(clip, slot);
   }
 
   function releaseAllMediaBuffers() {
@@ -2790,6 +2973,7 @@
       player.load();
       player.style.transform = '';
       player.style.filter = '';
+      updateSlotSvgMatrix(slot, null);
       player.classList.remove('blending');
       state.slotState[slot] = { clipId: null, sourceId: null, preseekedSec: null, pendingSeekSec: null };
     }
@@ -2882,6 +3066,7 @@
         player.load();
         player.style.transform = '';
         player.style.filter = '';
+        updateSlotSvgMatrix(slot, null);
         state.slotState[slot] = { clipId: null, sourceId: null, preseekedSec: null, pendingSeekSec: null };
       }
       return player;
@@ -3866,6 +4051,22 @@
     el.fsUpBtn.onclick = () => {
       if (state.fsParentDir) loadFsDirectory(state.fsParentDir);
     };
+    if (el.fsSortDateBtn) {
+      el.fsSortDateBtn.onclick = () => {
+        if (state.fsSortMode === 'date') return;
+        state.fsSortMode = 'date';
+        syncFsSortButtons();
+        renderFsEntriesList();
+      };
+    }
+    if (el.fsSortAlphaBtn) {
+      el.fsSortAlphaBtn.onclick = () => {
+        if (state.fsSortMode === 'alpha') return;
+        state.fsSortMode = 'alpha';
+        syncFsSortButtons();
+        renderFsEntriesList();
+      };
+    }
     el.fsConfirmBtn.onclick = async () => {
       if (!state.project || state.fsSelectedPaths.length === 0) return;
       el.fsConfirmBtn.disabled = true;
@@ -4177,11 +4378,15 @@
 
     // Color Grading Sliders (live preview drag + push Undo only on release)
     const colorSliderSpecs = [
-      { field: 'exposure', slider: el.cgExposureSlider, badge: el.cgExposureVal },
-      { field: 'saturation', slider: el.cgSaturationSlider, badge: el.cgSaturationVal },
-      { field: 'contrast', slider: el.cgContrastSlider, badge: el.cgContrastVal },
+      { field: 'exposure', slider: el.cgExposureSlider, badge: el.cgExposureVal, clamp: clampColorGrade, fmt: formatSignedGrade },
+      { field: 'saturation', slider: el.cgSaturationSlider, badge: el.cgSaturationVal, clamp: clampColorGrade, fmt: formatSignedGrade },
+      { field: 'contrast', slider: el.cgContrastSlider, badge: el.cgContrastVal, clamp: clampColorGrade, fmt: formatSignedGrade },
+      { field: 'hue', slider: el.cgHueSlider, badge: el.cgHueVal, clamp: clampHueGrade, fmt: formatSignedHue },
+      { field: 'red', slider: el.cgRedSlider, badge: el.cgRedVal, clamp: clampColorGrade, fmt: formatSignedGrade },
+      { field: 'green', slider: el.cgGreenSlider, badge: el.cgGreenVal, clamp: clampColorGrade, fmt: formatSignedGrade },
+      { field: 'blue', slider: el.cgBlueSlider, badge: el.cgBlueVal, clamp: clampColorGrade, fmt: formatSignedGrade },
     ];
-    for (const { field, slider, badge } of colorSliderSpecs) {
+    for (const { field, slider, badge, clamp, fmt } of colorSliderSpecs) {
       if (!slider) continue;
       const beginBaseline = () => {
         const target = getColorGradeTargetClip();
@@ -4190,7 +4395,7 @@
           field,
           clipId: target.clip.id,
           snapshot: captureSnapshot(),
-          startVal: clampColorGrade(target.clip[field]),
+          startVal: clamp(target.clip[field]),
         };
       };
       const commitChange = () => {
@@ -4199,7 +4404,7 @@
         const baseline = state.cgPreDragSnapshot;
         state.cgPreDragSnapshot = null;
         if (target && target.clip && target.clip.id === baseline.clipId) {
-          const finalVal = clampColorGrade(target.clip[field]);
+          const finalVal = clamp(target.clip[field]);
           if (finalVal !== baseline.startVal) {
             const hist = getProjectHistory();
             hist.undo.push(baseline.snapshot);
@@ -4217,15 +4422,12 @@
         const target = getColorGradeTargetClip();
         if (!target || !target.clip) return;
         if (!state.cgPreDragSnapshot) beginBaseline();
-        const nextVal = clampColorGrade(slider.value);
+        const nextVal = clamp(slider.value);
         target.clip[field] = nextVal;
-        if (badge) badge.textContent = formatSignedGrade(nextVal);
+        if (badge) badge.textContent = fmt(nextVal);
         applyLiveColorFilterToActiveSlots(target.clip);
         if (el.cgResetAllBtn) {
-          el.cgResetAllBtn.disabled =
-            clampColorGrade(target.clip.exposure) === 0 &&
-            clampColorGrade(target.clip.saturation) === 0 &&
-            clampColorGrade(target.clip.contrast) === 0;
+          el.cgResetAllBtn.disabled = isClipColorDefault(target.clip);
         }
       });
       slider.addEventListener('change', commitChange);
@@ -4235,7 +4437,7 @@
         const target = getColorGradeTargetClip();
         if (!target || !target.clip) return;
         state.cgPreDragSnapshot = null;
-        if (clampColorGrade(target.clip[field]) === 0) return;
+        if (clamp(target.clip[field]) === 0) return;
         pushUndoState();
         target.clip[field] = 0;
         renderColorGradingPanel();
@@ -4249,11 +4451,7 @@
         const target = getColorGradeTargetClip();
         if (!target || !target.clip) return;
         const { clip } = target;
-        if (
-          clampColorGrade(clip.exposure) === 0 &&
-          clampColorGrade(clip.saturation) === 0 &&
-          clampColorGrade(clip.contrast) === 0
-        ) {
+        if (isClipColorDefault(clip)) {
           return;
         }
         state.cgPreDragSnapshot = null;
@@ -4261,6 +4459,10 @@
         clip.exposure = 0;
         clip.saturation = 0;
         clip.contrast = 0;
+        clip.hue = 0;
+        clip.red = 0;
+        clip.green = 0;
+        clip.blue = 0;
         renderColorGradingPanel();
         applyLiveColorFilterToActiveSlots(clip);
         syncPreviewAtCurrentFrame();
