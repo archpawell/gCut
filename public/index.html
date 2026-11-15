@@ -3,7 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Montage Studio — macOS Video Editor</title>
+  <title>gCut — macOS Video Editor</title>
+  <link rel="icon" id="app-favicon" type="image/jpeg" href="/LOGO_B.jpg?theme=dark" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link
@@ -23,8 +24,8 @@
   <header class="top-toolbar">
     <div class="toolbar-left">
       <div class="brand-chip">
-        <span class="material-symbols-rounded brand-icon">movie_edit</span>
-        <span class="brand-title">Montage Studio</span>
+        <img id="brandLogoImg" src="/LOGO_B.jpg" alt="gCut" class="brand-logo" />
+        <span class="brand-title">gCut</span>
       </div>
       <div class="project-pill">
         <span id="activeProjectName" class="project-name-label">Loading...</span>
@@ -50,10 +51,6 @@
       <button id="snapToggleBtn" class="btn btn-toggle active" title="Magnetic Snapping (~8px)">
         <span class="material-symbols-rounded">magnet</span>
         <span>Snap</span>
-      </button>
-      <button id="rippleSyncBtn" class="btn btn-toggle" title="Ripple-Sync Audio Tracks 2 & 3 with Track 1 edits">
-        <span class="material-symbols-rounded">link</span>
-        <span>Ripple-Sync Audio</span>
       </button>
     </div>
 
@@ -162,9 +159,17 @@
               <span class="material-symbols-rounded">chevron_right</span>
             </button>
             <div class="toolbar-divider"></div>
+            <button id="trimLeftBtn" class="btn btn-tonal btn-sm" title="Trim Left at Playhead ([)">
+              <span class="material-symbols-rounded">first_page</span>
+              <span>Trim Left ([)</span>
+            </button>
             <button id="splitBtn" class="btn btn-tonal btn-sm" title="Split Selected or Playhead Clip (S)">
               <span class="material-symbols-rounded">content_cut</span>
               <span>Split (S)</span>
+            </button>
+            <button id="trimRightBtn" class="btn btn-tonal btn-sm" title="Trim Right at Playhead (])">
+              <span>Trim Right (])</span>
+              <span class="material-symbols-rounded">last_page</span>
             </button>
           </div>
 
@@ -281,15 +286,13 @@
           <div class="track-header track-header-a1">
             <span class="track-badge badge-a1">A1</span>
             <div class="track-header-meta">
-              <strong>Audio Track 2</strong>
-              <small>Free (Music / Stems)</small>
+              <strong>Audio 1</strong>
             </div>
           </div>
           <div class="track-header track-header-a2">
             <span class="track-badge badge-a2">A2</span>
             <div class="track-header-meta">
-              <strong>Audio Track 3</strong>
-              <small>Free (Voice / SFX)</small>
+              <strong>Audio 2</strong>
             </div>
           </div>
         </div>
@@ -303,10 +306,10 @@
               <div class="lane-drop-hint">Drop Video Clips Here (Sequential Magnetic Track)</div>
             </div>
             <div id="track2Lane" class="track-lane track-lane-a1" data-track="track2">
-              <div class="lane-drop-hint">Drop Audio Track 1 (Suno / Music)</div>
+              <div class="lane-drop-hint">Drop Audio 1 Clips Here</div>
             </div>
             <div id="track3Lane" class="track-lane track-lane-a2" data-track="track3">
-              <div class="lane-drop-hint">Drop Audio Track 2 (Gemini Voice / SFX)</div>
+              <div class="lane-drop-hint">Drop Audio 2 Clips Here</div>
             </div>
 
             <div id="snapGuideLine" class="snap-guide hidden"></div>
@@ -393,7 +396,7 @@
       <div class="modal-header">
         <div class="modal-title-row">
           <span class="material-symbols-rounded">movie</span>
-          <h3>Export Final Montage (1920×1080 • 24 fps)</h3>
+          <h3>Export Final gCut Video (1920×1080 • 24 fps)</h3>
         </div>
         <button id="closeExportModalBtn" class="icon-btn icon-btn-sm" title="Close">
           <span class="material-symbols-rounded">close</span>
@@ -416,6 +419,7 @@
             <label class="field-group">
               <span>Compression Quality</span>
               <select id="exportQualitySelect" class="input-select">
+                <option value="super" selected>Super Quality (VT q:v 92 / CRF 10)</option>
                 <option value="high">High (VT q:v 75 / CRF 18–20)</option>
                 <option value="medium">Medium (VT q:v 60 / CRF 23–25)</option>
                 <option value="low">Low (VT q:v 45 / CRF 28–30)</option>

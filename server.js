@@ -1231,10 +1231,10 @@ function buildExportPipeline(project, pathsObj, options) {
   }
 
   const codec = options.codec === 'h265' ? 'h265' : 'h264';
-  const quality = ['high', 'medium', 'low'].includes(options.quality) ? options.quality : 'high';
-  const vtQualityMap = { high: '75', medium: '60', low: '45' };
-  const x264CrfMap = { high: '18', medium: '23', low: '28' };
-  const x265CrfMap = { high: '20', medium: '25', low: '30' };
+  const quality = ['super', 'high', 'medium', 'low'].includes(options.quality) ? options.quality : 'high';
+  const vtQualityMap = { super: '92', high: '75', medium: '60', low: '45' };
+  const x264CrfMap = { super: '10', high: '18', medium: '23', low: '28' };
+  const x265CrfMap = { super: '10', high: '20', medium: '25', low: '30' };
 
   let videoCodecArgs = [];
   if (codec === 'h265') {
@@ -1396,7 +1396,7 @@ app.use((err, _req, res, _next) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Montage Studio running at http://localhost:${PORT}`);
+  console.log(`gCut running at http://localhost:${PORT}`);
   console.log(`Projects workspace: ${PROJECTS_ROOT}`);
   console.log(`FFmpeg: ${ffmpegPath || 'MISSING'} | FFprobe: ${ffprobePath || 'MISSING'}`);
 });

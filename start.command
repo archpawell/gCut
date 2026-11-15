@@ -12,7 +12,7 @@ PORT="${PORT:-3456}"
 URL="http://localhost:${PORT}"
 
 if lsof -iTCP:"${PORT}" -sTCP:LISTEN -t >/dev/null 2>&1; then
-  echo "Montage Studio is already running on ${URL}"
+  echo "gCut is already running on ${URL}"
   open "${URL}"
   exit 0
 fi
@@ -38,5 +38,5 @@ fi
   done
 ) &
 
-echo "Starting Montage Studio on ${URL}..."
+echo "Starting gCut on ${URL}..."
 exec node server.js

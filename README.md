@@ -1,4 +1,4 @@
-# Montage Studio — macOS Non-Destructive Video Montage Web App
+# gCut — macOS Non-Destructive Video Montage Web App
 
 A lightweight, local-first video montage web application tailored specifically for **macOS** (Apple Silicon & Intel Macs), built with Node.js/Express, Vanilla JS (Google Material 3 aesthetic), and local **FFmpeg / FFprobe** binaries.
 
@@ -12,7 +12,7 @@ A lightweight, local-first video montage web application tailored specifically f
    ```bash
    brew install ffmpeg
    ```
-   Montage Studio automatically probes `/opt/homebrew/bin` (Apple Silicon), `/usr/local/bin` (Intel Mac), and your system `PATH`, plus probes `h264_videotoolbox` / `hevc_videotoolbox` hardware encoding on startup (with automatic fallback to `libx264` / `libx265`).
+   gCut automatically probes `/opt/homebrew/bin` (Apple Silicon), `/usr/local/bin` (Intel Mac), and your system `PATH`, plus probes `h264_videotoolbox` / `hevc_videotoolbox` hardware encoding on startup (with automatic fallback to `libx264` / `libx265`).
 
 ## Quick Launch
 

@@ -123,10 +123,19 @@ code {
 .brand-chip {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   font-weight: 600;
   font-size: 15px;
   margin-right: 6px;
+}
+
+.brand-logo {
+  height: 26px;
+  width: 26px;
+  border-radius: 6px;
+  object-fit: cover;
+  display: block;
+  flex-shrink: 0;
 }
 
 .brand-icon {
@@ -999,6 +1008,10 @@ code {
 .tl-clip.a2 {
   background: var(--accent-amber-soft);
   border-color: var(--accent-amber);
+}
+
+.tl-clip:hover {
+  z-index: 3;
 }
 
 .tl-clip.selected {

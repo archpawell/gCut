@@ -65,6 +65,8 @@
   // DOM Elements
   // -------------------------------------------------------------------------
   const el = {
+    appFavicon: document.getElementById('app-favicon'),
+    brandLogoImg: document.getElementById('brandLogoImg'),
     ffmpegBanner: document.getElementById('ffmpegBanner'),
     ffmpegBannerText: document.getElementById('ffmpegBannerText'),
     activeProjectName: document.getElementById('activeProjectName'),
@@ -74,7 +76,6 @@
     undoBtn: document.getElementById('undoBtn'),
     redoBtn: document.getElementById('redoBtn'),
     snapToggleBtn: document.getElementById('snapToggleBtn'),
-    rippleSyncBtn: document.getElementById('rippleSyncBtn'),
     themeToggleBtn: document.getElementById('themeToggleBtn'),
     themeIcon: document.getElementById('themeIcon'),
     exportModalBtn: document.getElementById('exportModalBtn'),
@@ -101,7 +102,9 @@
     playPauseBtn: document.getElementById('playPauseBtn'),
     playPauseIcon: document.getElementById('playPauseIcon'),
     stepForwardBtn: document.getElementById('stepForwardBtn'),
+    trimLeftBtn: document.getElementById('trimLeftBtn'),
     splitBtn: document.getElementById('splitBtn'),
+    trimRightBtn: document.getElementById('trimRightBtn'),
 
     inspectorEmpty: document.getElementById('inspectorEmpty'),
     inspectorControls: document.getElementById('inspectorControls'),
@@ -269,12 +272,13 @@
     }
   }
 
-  function applyRippleSyncAudio(editPointFrame, deltaFrames) {
-    if (!state.project?.rippleSyncAudio || deltaFrames === 0) return;
+  function shiftAudioFromSegmentStart(segmentStartFrame, deltaFrames) {
+    if (!state.project || deltaFrames === 0) return;
     for (const tk of ['track2', 'track3']) {
       for (const clip of state.project.tracks[tk]) {
-        if ((clip.timelineStartFrame || 0) >= editPointFrame) {
-          clip.timelineStartFrame = Math.max(0, Math.round((clip.timelineStartFrame || 0) + deltaFrames));
+        const curStart = clip.timelineStartFrame || 0;
+        if (curStart >= segmentStartFrame) {
+          clip.timelineStartFrame = Math.max(0, Math.round(curStart + deltaFrames));
         }
       }
     }
@@ -334,6 +338,12 @@
     document.documentElement.dataset.theme = resolved;
     localStorage.setItem('montage_theme', resolved);
     el.themeIcon.textContent = resolved === 'dark' ? 'light_mode' : 'dark_mode';
+    if (el.brandLogoImg) {
+      el.brandLogoImg.src = resolved === 'light' ? '/LOGO_W.jpg' : '/LOGO_B.jpg';
+    }
+    if (el.appFavicon) {
+      el.appFavicon.href = resolved === 'light' ? '/LOGO_W.jpg?theme=light' : '/LOGO_B.jpg?theme=dark';
+    }
     drawTimelineRuler();
     renderAllTimelineClips();
   }
@@ -950,7 +960,7 @@
         : getTotalTrack1Frames();
       t1.splice(insertIndex, 0, newClip);
       repackTrack1();
-      applyRippleSyncAudio(insertAtFrame, getClipDurationFrames(newClip, 'track1'));
+      shiftAudioFromSegmentStart(insertAtFrame, getClipDurationFrames(newClip, 'track1'));
     } else {
       state.project.tracks[trackKey].push(newClip);
     }
@@ -982,7 +992,7 @@
       list.splice(idx, 1);
       if (sel.trackKey === 'track1') {
         repackTrack1();
-        applyRippleSyncAudio(removedStart, -removedDur);
+        shiftAudioFromSegmentStart(removedStart, -removedDur);
       }
     }
     state.selectedClip = null;
@@ -992,102 +1002,171 @@
     scheduleAutoSave();
   }
 
-  function splitAtPlayhead() {
-    if (!state.project) return;
+  function resolvePlayheadCutTarget(mode) {
+    if (!state.project) return null;
     const frame = state.playheadFrame;
 
-    // Pick selected clip if playhead is inside it, else find clip across tracks under playhead
     let target = getSelectedClipObj();
     if (target) {
       const start = target.clip.timelineStartFrame || 0;
       const end = start + getClipDurationFrames(target.clip, target.trackKey);
-      if (frame <= start || frame >= end) {
-        target = null;
-      }
-    }
-
-    if (!target) {
-      for (const tk of ['track1', 'track2', 'track3']) {
-        for (const c of state.project.tracks[tk]) {
-          const start = c.timelineStartFrame || 0;
-          const end = start + getClipDurationFrames(c, tk);
-          if (frame > start && frame < end) {
-            target = { trackKey: tk, clip: c, source: getSourceById(c.sourceId) };
-            break;
-          }
+      if (frame >= start && frame <= end) {
+        if (frame === start || frame === end) {
+          return null; // Boundary on explicitly selected clip -> safe no-op
         }
-        if (target) break;
+        return { ...target, start, end };
       }
     }
 
-    if (!target) {
-      showToast('Move the playhead inside a clip to split it.', 'warn');
-      return;
+    for (const tk of ['track1', 'track2', 'track3']) {
+      for (const c of state.project.tracks[tk]) {
+        const start = c.timelineStartFrame || 0;
+        const end = start + getClipDurationFrames(c, tk);
+        if (frame > start && frame < end) {
+          return { trackKey: tk, clip: c, source: getSourceById(c.sourceId), start, end };
+        }
+      }
     }
+    if (mode === 'split') {
+      showToast('Move the playhead inside a clip to split it.', 'warn');
+    }
+    return null;
+  }
 
-    const { trackKey, clip } = target;
+  function computeSplitSegments(target, frame) {
+    const { trackKey, clip, start } = target;
     const speed = trackKey === 'track1' ? (Number(clip.speed) > 0 ? Number(clip.speed) : 1) : 1;
-    const start = clip.timelineStartFrame || 0;
     const offsetTimelineFrames = frame - start;
 
-    let splitSourceFrame;
-    if (clip.reversed) {
-      splitSourceFrame = Math.round(clip.outFrame - offsetTimelineFrames * speed);
-    } else {
-      splitSourceFrame = Math.round(clip.inFrame + offsetTimelineFrames * speed);
+    let splitSourceFrame = clip.reversed
+      ? Math.round(clip.outFrame - offsetTimelineFrames * speed)
+      : Math.round(clip.inFrame + offsetTimelineFrames * speed);
+
+    splitSourceFrame = Math.max(clip.inFrame, Math.min(clip.outFrame, splitSourceFrame));
+    if (splitSourceFrame <= clip.inFrame || splitSourceFrame >= clip.outFrame) {
+      return null;
     }
 
-    splitSourceFrame = Math.max(clip.inFrame + 1, Math.min(clip.outFrame - 1, splitSourceFrame));
-    if (splitSourceFrame <= clip.inFrame || splitSourceFrame >= clip.outFrame) {
+    if (clip.reversed) {
+      return {
+        leftSeg: {
+          ...clip,
+          inFrame: splitSourceFrame,
+          outFrame: clip.outFrame,
+          fadeOutSec: 0,
+        },
+        rightSeg: {
+          ...clip,
+          id: makeClipId(),
+          inFrame: clip.inFrame,
+          outFrame: splitSourceFrame,
+          timelineStartFrame: frame,
+          fadeInSec: 0,
+        },
+      };
+    }
+
+    return {
+      leftSeg: {
+        ...clip,
+        inFrame: clip.inFrame,
+        outFrame: splitSourceFrame,
+        fadeOutSec: 0,
+      },
+      rightSeg: {
+        ...clip,
+        id: makeClipId(),
+        inFrame: splitSourceFrame,
+        outFrame: clip.outFrame,
+        timelineStartFrame: frame,
+        fadeInSec: 0,
+      },
+    };
+  }
+
+  function splitAtPlayhead() {
+    const frame = state.playheadFrame;
+    const target = resolvePlayheadCutTarget('split');
+    if (!target) return;
+
+    const segs = computeSplitSegments(target, frame);
+    if (!segs) {
       showToast('Clip segment is too short to split at this frame.', 'warn');
       return;
     }
 
     pushUndoState();
-
-    let leftSeg;
-    let rightSeg;
-
-    if (clip.reversed) {
-      leftSeg = {
-        ...clip,
-        inFrame: splitSourceFrame,
-        outFrame: clip.outFrame,
-        fadeOutSec: 0,
-      };
-      rightSeg = {
-        ...clip,
-        id: makeClipId(),
-        inFrame: clip.inFrame,
-        outFrame: splitSourceFrame,
-        timelineStartFrame: frame,
-        fadeInSec: 0,
-      };
-    } else {
-      leftSeg = {
-        ...clip,
-        inFrame: clip.inFrame,
-        outFrame: splitSourceFrame,
-        fadeOutSec: 0,
-      };
-      rightSeg = {
-        ...clip,
-        id: makeClipId(),
-        inFrame: splitSourceFrame,
-        outFrame: clip.outFrame,
-        timelineStartFrame: frame,
-        fadeInSec: 0,
-      };
-    }
-
-    const list = state.project.tracks[trackKey];
-    const idx = list.findIndex((c) => c.id === clip.id);
-    list.splice(idx, 1, leftSeg, rightSeg);
-    if (trackKey === 'track1') {
+    const list = state.project.tracks[target.trackKey];
+    const idx = list.findIndex((c) => c.id === target.clip.id);
+    list.splice(idx, 1, segs.leftSeg, segs.rightSeg);
+    if (target.trackKey === 'track1') {
       repackTrack1();
     }
 
+    state.selectedClip = { trackKey: target.trackKey, clipId: segs.rightSeg.id };
+    renderTimelineAndInspector();
+    syncAudioPool();
+    syncPreviewAtCurrentFrame();
+    scheduleAutoSave();
+  }
+
+  function trimLeftAtPlayhead() {
+    const frame = state.playheadFrame;
+    const target = resolvePlayheadCutTarget('trimLeft');
+    if (!target) return;
+
+    const segs = computeSplitSegments(target, frame);
+    if (!segs) return;
+
+    pushUndoState();
+    const { trackKey, clip, start } = target;
+    const oldDur = getClipDurationFrames(clip, trackKey);
+    const list = state.project.tracks[trackKey];
+    const idx = list.findIndex((c) => c.id === clip.id);
+    const rightSeg = segs.rightSeg;
+    list.splice(idx, 1, rightSeg);
+
+    if (trackKey === 'track1') {
+      repackTrack1();
+      const newDur = getClipDurationFrames(rightSeg, 'track1');
+      shiftAudioFromSegmentStart(start, newDur - oldDur);
+      state.playheadFrame = rightSeg.timelineStartFrame;
+    } else {
+      rightSeg.timelineStartFrame = frame;
+    }
+
     state.selectedClip = { trackKey, clipId: rightSeg.id };
+    renderTimelineAndInspector();
+    syncAudioPool();
+    syncPreviewAtCurrentFrame();
+    scheduleAutoSave();
+  }
+
+  function trimRightAtPlayhead() {
+    const frame = state.playheadFrame;
+    const target = resolvePlayheadCutTarget('trimRight');
+    if (!target) return;
+
+    const segs = computeSplitSegments(target, frame);
+    if (!segs) return;
+
+    pushUndoState();
+    const { trackKey, clip, start } = target;
+    const oldDur = getClipDurationFrames(clip, trackKey);
+    const list = state.project.tracks[trackKey];
+    const idx = list.findIndex((c) => c.id === clip.id);
+    const leftSeg = segs.leftSeg;
+    list.splice(idx, 1, leftSeg);
+
+    if (trackKey === 'track1') {
+      repackTrack1();
+      const newDur = getClipDurationFrames(leftSeg, 'track1');
+      shiftAudioFromSegmentStart(start, newDur - oldDur);
+    } else {
+      leftSeg.timelineStartFrame = start;
+    }
+
+    state.selectedClip = { trackKey, clipId: leftSeg.id };
     renderTimelineAndInspector();
     syncAudioPool();
     syncPreviewAtCurrentFrame();
@@ -1187,8 +1266,8 @@
     if (!state.project) return;
     const lanes = [
       { key: 'track1', el: el.track1Lane, cls: 'v1', hint: 'Drop Video Clips Here (Sequential Magnetic Track)' },
-      { key: 'track2', el: el.track2Lane, cls: 'a1', hint: 'Drop Audio Track 1 (Suno / Music)' },
-      { key: 'track3', el: el.track3Lane, cls: 'a2', hint: 'Drop Audio Track 2 (Gemini Voice / SFX)' },
+      { key: 'track2', el: el.track2Lane, cls: 'a1', hint: 'Drop Audio 1 Clips Here' },
+      { key: 'track3', el: el.track3Lane, cls: 'a2', hint: 'Drop Audio 2 Clips Here' },
     ];
 
     const totalWidth = Math.max(
@@ -1440,7 +1519,7 @@
       if (pushedUndo) {
         if (trackKey === 'track1') {
           const newTlDur = getClipDurationFrames(clip, 'track1');
-          applyRippleSyncAudio((clip.timelineStartFrame || 0) + origTlDur, newTlDur - origTlDur);
+          shiftAudioFromSegmentStart(origTlStart, newTlDur - origTlDur);
         }
         renderTimelineAndInspector();
         syncAudioPool();
@@ -1511,7 +1590,6 @@
   function syncToolbarToggles() {
     if (!state.project) return;
     el.snapToggleBtn.classList.toggle('active', Boolean(state.project.snapEnabled));
-    el.rippleSyncBtn.classList.toggle('active', Boolean(state.project.rippleSyncAudio));
   }
 
   // -------------------------------------------------------------------------
@@ -1965,7 +2043,7 @@
       showToast('Add at least one clip to Track 1 before exporting.', 'warn');
       return;
     }
-    el.exportFilenameInput.value = `${state.project.name || 'montage'}_export`;
+    el.exportFilenameInput.value = `${state.project.name || 'gcut'}_export`;
     el.exportProgressArea.classList.add('hidden');
     el.exportDoneActions.classList.add('hidden');
     el.startExportBtn.disabled = false;
@@ -2088,14 +2166,6 @@
       scheduleAutoSave();
     };
 
-    el.rippleSyncBtn.onclick = () => {
-      if (!state.project) return;
-      pushUndoState();
-      state.project.rippleSyncAudio = !state.project.rippleSyncAudio;
-      syncToolbarToggles();
-      scheduleAutoSave();
-    };
-
     // Finder Drag-and-Drop
     el.finderDropZone.onclick = () => el.finderFileInput.click();
     el.finderFileInput.onchange = (e) => {
@@ -2189,7 +2259,9 @@
     el.stepBackBtn.onclick = () => stepFrames(-1);
     el.stepForwardBtn.onclick = () => stepFrames(1);
     el.playPauseBtn.onclick = togglePlayback;
+    el.trimLeftBtn.onclick = trimLeftAtPlayhead;
     el.splitBtn.onclick = splitAtPlayhead;
+    el.trimRightBtn.onclick = trimRightAtPlayhead;
 
     // Ruler Scrubbing (1-frame increments)
     const scrubToClientX = (clientX) => {
@@ -2253,12 +2325,12 @@
       if (!sel || sel.trackKey !== 'track1') return;
       const clamped = Math.max(0.25, Math.min(4.0, Number(newSpeed) || 1));
       pushUndoState();
+      const segStart = sel.clip.timelineStartFrame || 0;
       const oldDur = getClipDurationFrames(sel.clip, 'track1');
-      const endBefore = (sel.clip.timelineStartFrame || 0) + oldDur;
       sel.clip.speed = Number(clamped.toFixed(3));
       repackTrack1();
       const newDur = getClipDurationFrames(sel.clip, 'track1');
-      applyRippleSyncAudio(endBefore, newDur - oldDur);
+      shiftAudioFromSegmentStart(segStart, newDur - oldDur);
       renderTimelineAndInspector();
       syncPreviewAtCurrentFrame();
       scheduleAutoSave();
@@ -2351,7 +2423,7 @@
     // Global Keyboard Shortcuts
     window.addEventListener('keydown', (e) => {
       const tag = document.activeElement?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.target?.isContentEditable) return;
 
       const isMod = e.metaKey || e.ctrlKey;
       if (isMod && e.key.toLowerCase() === 'z') {
@@ -2373,6 +2445,12 @@
       } else if (e.key.toLowerCase() === 's' && !isMod) {
         e.preventDefault();
         splitAtPlayhead();
+      } else if (e.key === '[' && !isMod) {
+        e.preventDefault();
+        trimLeftAtPlayhead();
+      } else if (e.key === ']' && !isMod) {
+        e.preventDefault();
+        trimRightAtPlayhead();
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         if (state.selectedClip) {
           e.preventDefault();
