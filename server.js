@@ -179,6 +179,11 @@ function getPostSpeedDurationFrames(inFrame, outFrame, speed) {
   return Math.max(1, Math.floor(span / safeSpeed));
 }
 
+function clampColorGrade(val) {
+  const n = Math.round(Number(val) || 0);
+  return Math.max(-100, Math.min(100, n));
+}
+
 function getTransitionNetDelta(type) {
   if (type === 'transform') return -1;
   if (type === 'fade_black' || type === 'fade_white') return 1;
@@ -201,6 +206,9 @@ function resolveTrack1LayoutAndTransitions(track1, rawTransitions) {
       outFrame,
       reversed: Boolean(clip.reversed),
       mirrored: Boolean(clip.mirrored),
+      exposure: clampColorGrade(clip.exposure),
+      saturation: clampColorGrade(clip.saturation),
+      contrast: clampColorGrade(clip.contrast),
       durationFrames,
       leftTransitionFrames: 0,
       rightTransitionFrames: 0,
@@ -298,7 +306,13 @@ function normalizeProjectData(project) {
     project.tracks = { track1: [], track2: [], track3: [] };
   }
   project.tracks.track1 = Array.isArray(project.tracks.track1)
-    ? project.tracks.track1.map((c) => ({ ...c, mirrored: Boolean(c.mirrored) }))
+    ? project.tracks.track1.map((c) => ({
+        ...c,
+        mirrored: Boolean(c.mirrored),
+        exposure: clampColorGrade(c.exposure),
+        saturation: clampColorGrade(c.saturation),
+        contrast: clampColorGrade(c.contrast),
+      }))
     : [];
   project.tracks.track2 = Array.isArray(project.tracks.track2) ? project.tracks.track2 : [];
   project.tracks.track3 = Array.isArray(project.tracks.track3) ? project.tracks.track3 : [];
@@ -1452,6 +1466,15 @@ function parseFfmpegTimeToSeconds(line) {
 }
 
 function buildExportPipeline(project, pathsObj, options) {
+  const RES_MAP = {
+    '1920x1080': { w: 1920, h: 1080, tag: '1080p' },
+    '1280x720': { w: 1280, h: 720, tag: '720p' },
+    '3840x2160': { w: 3840, h: 2160, tag: '4k' },
+  };
+  const resSpec = RES_MAP[String(options.resolution || '1920x1080')] || RES_MAP['1920x1080'];
+  const outW = resSpec.w;
+  const outH = resSpec.h;
+
   const track1 = Array.isArray(project.tracks?.track1) ? project.tracks.track1 : [];
   const track2 = Array.isArray(project.tracks?.track2) ? project.tracks.track2 : [];
   const track3 = Array.isArray(project.tracks?.track3) ? project.tracks.track3 : [];
@@ -1608,11 +1631,26 @@ function buildExportPipeline(project, pathsObj, options) {
     if (clip.mirrored) {
       parts.push('hflip');
     }
+    const exposure = clampColorGrade(clip.exposure);
+    const saturation = clampColorGrade(clip.saturation);
+    const contrast = clampColorGrade(clip.contrast);
+    if (exposure !== 0) {
+      const expFactor = (1 + exposure / 100).toFixed(3);
+      parts.push(
+        'format=yuv420p',
+        `lutyuv=y='clip(16+(val-16)*${expFactor},16,235)'`
+      );
+    }
+    if (contrast !== 0 || saturation !== 0) {
+      const conFactor = (1 + contrast / 100).toFixed(3);
+      const satFactor = (1 + saturation / 100).toFixed(3);
+      parts.push(`eq=contrast=${conFactor}:saturation=${satFactor}`);
+    }
     const tailPad = clip.speed < 1 ? Math.ceil(1 / clip.speed) + 1 : 1;
     parts.push(
       `fps=${FPS}`,
-      'scale=1920:1080:flags=lanczos:force_original_aspect_ratio=decrease',
-      'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black',
+      `scale=${outW}:${outH}:flags=lanczos:force_original_aspect_ratio=decrease`,
+      `pad=${outW}:${outH}:(ow-iw)/2:(oh-ih)/2:black`,
       'setsar=1',
       'format=yuv420p',
       `tpad=stop_mode=clone:stop=${tailPad}`,
@@ -1698,7 +1736,7 @@ function buildExportPipeline(project, pathsObj, options) {
       } else if (nextTrans && (nextTrans.type === 'fade_black' || nextTrans.type === 'fade_white')) {
         const fadeColor = nextTrans.type === 'fade_white' ? 'white' : 'black';
         filterLines.push(
-          `color=c=${fadeColor}:s=1920x1080:r=${FPS}:d=0.1,trim=start_frame=0:end_frame=1,setpts=PTS-STARTPTS,setsar=1,format=yuv420p[vcenter_${i}]`
+          `color=c=${fadeColor}:s=${outW}x${outH}:r=${FPS}:d=0.1,trim=start_frame=0:end_frame=1,setpts=PTS-STARTPTS,setsar=1,format=yuv420p[vcenter_${i}]`
         );
         vConcatPads.push(`[v_right_${i}]`, `[vcenter_${i}]`);
       }
@@ -1767,23 +1805,54 @@ function buildExportPipeline(project, pathsObj, options) {
   }
 
   const codec = options.codec === 'h265' ? 'h265' : 'h264';
-  const quality = ['super', 'high', 'medium', 'low'].includes(options.quality) ? options.quality : 'high';
-  const vtQualityMap = { super: '90', high: '85', medium: '75', low: '65' };
-  const x264CrfMap = { super: '11', high: '14', medium: '18', low: '23' };
-  const x265CrfMap = { super: '11', high: '14', medium: '18', low: '23' };
+  const encoderMode = options.encoderMode === 'software' ? 'software' : 'hardware';
+  const useVt =
+    encoderMode === 'hardware' &&
+    (codec === 'h265' ? hwSupport.hevc_videotoolbox : hwSupport.h264_videotoolbox);
+
+  let rateArgs = [];
+  if (options.rateControlMode === 'bitrate') {
+    const mbps = Math.max(2, Math.min(80, Number(options.bitrateMbps) || 15));
+    const maxRate = Number((mbps * 1.5).toFixed(2));
+    const bufSize = Number((mbps * 2).toFixed(2));
+    rateArgs = ['-b:v', `${mbps}M`, '-maxrate', `${maxRate}M`, '-bufsize', `${bufSize}M`];
+  } else if (options.rateControlMode === 'crf') {
+    const crfVal = Math.max(14, Math.min(32, Math.round(Number(options.crf) || 18)));
+    const vtQ = Math.max(1, Math.min(100, Math.round(100 - crfVal * 1.8)));
+    rateArgs = useVt ? ['-q:v', String(vtQ)] : ['-crf', String(crfVal)];
+  } else {
+    const quality = ['super', 'high', 'medium', 'low'].includes(options.quality) ? options.quality : 'high';
+    const vtQualityMap = { super: '90', high: '85', medium: '75', low: '65' };
+    const swCrfMap = { super: '11', high: '14', medium: '18', low: '23' };
+    rateArgs = useVt ? ['-q:v', vtQualityMap[quality]] : ['-crf', swCrfMap[quality]];
+  }
 
   let videoCodecArgs = [];
   if (codec === 'h265') {
-    if (hwSupport.hevc_videotoolbox) {
-      videoCodecArgs = ['-c:v', 'hevc_videotoolbox', '-allow_sw', '1', '-q:v', vtQualityMap[quality], '-tag:v', 'hvc1'];
+    if (useVt) {
+      videoCodecArgs = ['-c:v', 'hevc_videotoolbox', '-allow_sw', '1', ...rateArgs, '-tag:v', 'hvc1'];
     } else {
-      videoCodecArgs = ['-c:v', 'libx265', '-preset', 'medium', '-crf', x265CrfMap[quality], '-tag:v', 'hvc1'];
+      videoCodecArgs = ['-c:v', 'libx265', '-preset', 'medium', ...rateArgs, '-tag:v', 'hvc1'];
     }
-  } else if (hwSupport.h264_videotoolbox) {
-    videoCodecArgs = ['-c:v', 'h264_videotoolbox', '-allow_sw', '1', '-q:v', vtQualityMap[quality]];
+  } else if (useVt) {
+    videoCodecArgs = ['-c:v', 'h264_videotoolbox', '-allow_sw', '1', ...rateArgs];
   } else {
-    videoCodecArgs = ['-c:v', 'libx264', '-preset', 'medium', '-crf', x264CrfMap[quality], '-profile:v', 'high', '-level', '4.1'];
+    videoCodecArgs = [
+      '-c:v',
+      'libx264',
+      '-preset',
+      'medium',
+      ...rateArgs,
+      '-profile:v',
+      'high',
+      '-level',
+      outW > 1920 ? '5.1' : '4.1',
+    ];
   }
+
+  const allowedAudioBitrates = new Set(['128k', '192k', '256k', '320k']);
+  const normAudioBr = String(options.audioBitrate || '192k').toLowerCase().replace(/\s*kbps$/i, 'k');
+  const audioBitrate = allowedAudioBitrates.has(normAudioBr) ? normAudioBr : '192k';
 
   const safeBaseName = (options.filename || project.name || 'export')
     .replace(/\.mp4$/i, '')
@@ -1810,7 +1879,7 @@ function buildExportPipeline(project, pathsObj, options) {
 
   ffmpegArgs.push('-map', '[vout]');
   if (aSegPads.length > 0) {
-    ffmpegArgs.push('-map', '[aout]', '-c:a', 'aac', '-ar', String(SAMPLE_RATE), '-ac', '2', '-b:a', '256k');
+    ffmpegArgs.push('-map', '[aout]', '-c:a', 'aac', '-ar', String(SAMPLE_RATE), '-ac', '2', '-b:a', audioBitrate);
   } else {
     ffmpegArgs.push('-an');
   }

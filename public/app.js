@@ -62,6 +62,9 @@
     transitionPopover: null, // { fromClipId, toClipId }
     fullscreenActive: false,
     fullscreenHudTimer: null,
+    cgPreDragSnapshot: null,
+    lastRenderedColorClipId: null,
+    exportFilenameTouched: false,
   };
 
   // -------------------------------------------------------------------------
@@ -84,6 +87,7 @@
     themeToggleBtn: document.getElementById('themeToggleBtn'),
     themeIcon: document.getElementById('themeIcon'),
     exportModalBtn: document.getElementById('exportModalBtn'),
+    customExportBtn: document.getElementById('customExportBtn'),
 
     sourceCountPill: document.getElementById('sourceCountPill'),
     verifySourcesBtn: document.getElementById('verifySourcesBtn'),
@@ -104,6 +108,15 @@
     fsPlayPauseIcon: document.getElementById('fsPlayPauseIcon'),
     fsPlayPauseLabel: document.getElementById('fsPlayPauseLabel'),
     fsExitBtn: document.getElementById('fsExitBtn'),
+    colorGradingPanel: document.getElementById('colorGradingPanel'),
+    cgClipTargetLabel: document.getElementById('cgClipTargetLabel'),
+    cgResetAllBtn: document.getElementById('cgResetAllBtn'),
+    cgExposureSlider: document.getElementById('cgExposureSlider'),
+    cgExposureVal: document.getElementById('cgExposureVal'),
+    cgSaturationSlider: document.getElementById('cgSaturationSlider'),
+    cgSaturationVal: document.getElementById('cgSaturationVal'),
+    cgContrastSlider: document.getElementById('cgContrastSlider'),
+    cgContrastVal: document.getElementById('cgContrastVal'),
     vuMeterCanvas: document.getElementById('vuMeterCanvas'),
 
     currentTimecode: document.getElementById('currentTimecode'),
@@ -166,9 +179,24 @@
     fsConfirmBtn: document.getElementById('fsConfirmBtn'),
 
     exportModal: document.getElementById('exportModal'),
+    exportModalTitle: document.getElementById('exportModalTitle'),
+    exportFormArea: document.getElementById('exportFormArea'),
     closeExportModalBtn: document.getElementById('closeExportModalBtn'),
     exportFilenameInput: document.getElementById('exportFilenameInput'),
+    exportResolutionSelect: document.getElementById('exportResolutionSelect'),
+    exportAudioBitrateSelect: document.getElementById('exportAudioBitrateSelect'),
     exportCodecSelect: document.getElementById('exportCodecSelect'),
+    exportEncoderModeSelect: document.getElementById('exportEncoderModeSelect'),
+    exportRateControlSelect: document.getElementById('exportRateControlSelect'),
+    exportCrfRow: document.getElementById('exportCrfRow'),
+    exportCrfSlider: document.getElementById('exportCrfSlider'),
+    exportCrfInput: document.getElementById('exportCrfInput'),
+    exportCrfMappedHint: document.getElementById('exportCrfMappedHint'),
+    exportBitrateRow: document.getElementById('exportBitrateRow'),
+    exportBitrateSlider: document.getElementById('exportBitrateSlider'),
+    exportBitrateInput: document.getElementById('exportBitrateInput'),
+    exportBitrateMappedHint: document.getElementById('exportBitrateMappedHint'),
+    exportPresetRow: document.getElementById('exportPresetRow'),
     exportQualitySelect: document.getElementById('exportQualitySelect'),
     exportEncoderText: document.getElementById('exportEncoderText'),
     exportProgressArea: document.getElementById('exportProgressArea'),
@@ -268,13 +296,29 @@
     return (state.project.sources || []).find((s) => s.id === sourceId) || null;
   }
 
+  function clampColorGrade(val) {
+    const n = Math.round(Number(val) || 0);
+    return Math.max(-100, Math.min(100, n));
+  }
+
+  function formatSignedGrade(val) {
+    const v = clampColorGrade(val);
+    return v > 0 ? `+${v}` : String(v);
+  }
+
   function normalizeProjectModel(project) {
     if (!project || typeof project !== 'object') return project;
     if (!project.tracks || typeof project.tracks !== 'object') {
       project.tracks = { track1: [], track2: [], track3: [] };
     }
     project.tracks.track1 = Array.isArray(project.tracks.track1)
-      ? project.tracks.track1.map((c) => ({ ...c, mirrored: Boolean(c.mirrored) }))
+      ? project.tracks.track1.map((c) => ({
+          ...c,
+          mirrored: Boolean(c.mirrored),
+          exposure: clampColorGrade(c.exposure),
+          saturation: clampColorGrade(c.saturation),
+          contrast: clampColorGrade(c.contrast),
+        }))
       : [];
     project.tracks.track2 = Array.isArray(project.tracks.track2) ? project.tracks.track2 : [];
     project.tracks.track3 = Array.isArray(project.tracks.track3) ? project.tracks.track3 : [];
@@ -556,6 +600,106 @@
   // Theme (Day / Night Mode persisted in localStorage) & Transparent Favicon
   // -------------------------------------------------------------------------
   const faviconDataUrlCache = new Map();
+  const brandLogoDataUrlCache = new Map();
+
+  function buildCircularBrandLogoDataUrl(img) {
+    const size = 256;
+    const workCanvas = document.createElement('canvas');
+    workCanvas.width = size;
+    workCanvas.height = size;
+    const workCtx = workCanvas.getContext('2d', { willReadFrequently: true });
+    workCtx.drawImage(img, 0, 0, size, size);
+
+    const imgData = workCtx.getImageData(0, 0, size, size);
+    const data = imgData.data;
+
+    const bgR = data[0];
+    const bgG = data[1];
+    const bgB = data[2];
+    const tolerance = 34;
+
+    const visited = new Uint8Array(size * size);
+    const queue = new Int32Array(size * size);
+    let head = 0;
+    let tail = 0;
+
+    const enqueueIfOuterBg = (idx) => {
+      if (visited[idx]) return;
+      const off = idx * 4;
+      const dist = Math.hypot(data[off] - bgR, data[off + 1] - bgG, data[off + 2] - bgB);
+      if (dist < tolerance) {
+        visited[idx] = 1;
+        queue[tail++] = idx;
+      }
+    };
+
+    enqueueIfOuterBg(0);
+    enqueueIfOuterBg(size - 1);
+    enqueueIfOuterBg((size - 1) * size);
+    enqueueIfOuterBg(size * size - 1);
+
+    while (head < tail) {
+      const idx = queue[head++];
+      data[idx * 4 + 3] = 0;
+
+      const x = idx % size;
+      const y = (idx - x) / size;
+      if (x > 0) enqueueIfOuterBg(idx - 1);
+      if (x < size - 1) enqueueIfOuterBg(idx + 1);
+      if (y > 0) enqueueIfOuterBg(idx - size);
+      if (y < size - 1) enqueueIfOuterBg(idx + size);
+    }
+
+    // Apply circular emblem boundary mask so no square corners survive in Dark Mode
+    const cx = (size - 1) / 2;
+    const cy = (size - 1) / 2;
+    const innerR = 121.0;
+    const outerR = 124.5;
+    for (let y = 0; y < size; y += 1) {
+      for (let x = 0; x < size; x += 1) {
+        const d = Math.hypot(x - cx, y - cy);
+        if (d > innerR) {
+          const off = (y * size + x) * 4;
+          if (d >= outerR) {
+            data[off + 3] = 0;
+          } else {
+            const factor = Math.max(0, Math.min(1, (outerR - d) / (outerR - innerR)));
+            data[off + 3] = Math.round(data[off + 3] * factor);
+          }
+        }
+      }
+    }
+
+    workCtx.putImageData(imgData, 0, 0);
+    return workCanvas.toDataURL('image/png');
+  }
+
+  function updateCircularBrandLogo(resolvedTheme) {
+    if (!el.brandLogoImg) return;
+    if (brandLogoDataUrlCache.has(resolvedTheme)) {
+      el.brandLogoImg.src = brandLogoDataUrlCache.get(resolvedTheme);
+      return;
+    }
+
+    const srcUrl = resolvedTheme === 'light' ? '/LOGO_W.jpg' : '/LOGO_B.jpg';
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      try {
+        const dataUrl = buildCircularBrandLogoDataUrl(img);
+        brandLogoDataUrlCache.set(resolvedTheme, dataUrl);
+        if (document.documentElement.dataset.theme === resolvedTheme && el.brandLogoImg) {
+          el.brandLogoImg.src = dataUrl;
+        }
+      } catch {
+        el.brandLogoImg.src = srcUrl;
+      }
+    };
+    img.onerror = () => {
+      if (el.brandLogoImg) el.brandLogoImg.src = srcUrl;
+    };
+    img.src = srcUrl;
+  }
 
   function buildTransparentFaviconDataUrl(img) {
     const size = 256;
@@ -706,9 +850,7 @@
     document.documentElement.dataset.theme = resolved;
     localStorage.setItem('montage_theme', resolved);
     el.themeIcon.textContent = resolved === 'dark' ? 'light_mode' : 'dark_mode';
-    if (el.brandLogoImg) {
-      el.brandLogoImg.src = resolved === 'light' ? '/LOGO_W.jpg' : '/LOGO_B.jpg';
-    }
+    updateCircularBrandLogo(resolved);
     updateTransparentFavicon(resolved);
     drawTimelineRuler();
     renderAllTimelineClips();
@@ -1439,6 +1581,9 @@
       speed: 1.0,
       reversed: false,
       mirrored: false,
+      exposure: 0,
+      saturation: 0,
+      contrast: 0,
       timelineStartFrame: Math.max(0, Math.round(dropFrame)),
       volume: 1.0,
       fadeInSec: 0.0,
@@ -1561,16 +1706,26 @@
       return null;
     }
 
+    const baseGrades = trackKey === 'track1'
+      ? {
+          exposure: clampColorGrade(clip.exposure),
+          saturation: clampColorGrade(clip.saturation),
+          contrast: clampColorGrade(clip.contrast),
+        }
+      : {};
+
     if (clip.reversed) {
       return {
         leftSeg: {
           ...clip,
+          ...baseGrades,
           inFrame: splitSourceFrame,
           outFrame: clip.outFrame,
           fadeOutSec: 0,
         },
         rightSeg: {
           ...clip,
+          ...baseGrades,
           id: makeClipId(),
           inFrame: clip.inFrame,
           outFrame: splitSourceFrame,
@@ -1583,12 +1738,14 @@
     return {
       leftSeg: {
         ...clip,
+        ...baseGrades,
         inFrame: clip.inFrame,
         outFrame: splitSourceFrame,
         fadeOutSec: 0,
       },
       rightSeg: {
         ...clip,
+        ...baseGrades,
         id: makeClipId(),
         inFrame: splitSourceFrame,
         outFrame: clip.outFrame,
@@ -2407,6 +2564,7 @@
     if (!sel) {
       el.inspectorEmpty.classList.remove('hidden');
       el.inspectorControls.classList.add('hidden');
+      renderColorGradingPanel();
       return;
     }
 
@@ -2461,6 +2619,7 @@
     el.volumeLabel.textContent = `${volPct}%`;
     el.fadeInInput.value = Number(clip.fadeInSec || 0).toFixed(1);
     el.fadeOutInput.value = Number(clip.fadeOutSec || 0).toFixed(1);
+    renderColorGradingPanel();
   }
 
   function renderTimelineAndInspector() {
@@ -2468,7 +2627,65 @@
     renderAllTimelineClips();
     updatePlayheadUI();
     renderInspector();
+    renderColorGradingPanel();
     renderSourcesList();
+  }
+
+  function getColorGradeTargetClip() {
+    const sel = getSelectedClipObj();
+    if (sel && sel.trackKey === 'track1') {
+      return { clip: sel.clip, source: sel.source, mode: 'selected' };
+    }
+    const timelineSec = (state.playheadFrame + 0.01) / FPS;
+    const { active } = getTrack1ClipAtTime(timelineSec);
+    if (active && active.clip) {
+      return { clip: active.clip, source: getSourceById(active.clip.sourceId), mode: 'playhead' };
+    }
+    return null;
+  }
+
+  function renderColorGradingPanel() {
+    if (!el.cgExposureSlider || !el.cgSaturationSlider || !el.cgContrastSlider) return;
+    const target = getColorGradeTargetClip();
+    if (!target || !target.clip) {
+      state.lastRenderedColorClipId = null;
+      if (el.cgClipTargetLabel) el.cgClipTargetLabel.textContent = 'No video clip';
+      el.cgExposureSlider.value = '0';
+      el.cgSaturationSlider.value = '0';
+      el.cgContrastSlider.value = '0';
+      el.cgExposureSlider.disabled = true;
+      el.cgSaturationSlider.disabled = true;
+      el.cgContrastSlider.disabled = true;
+      if (el.cgResetAllBtn) el.cgResetAllBtn.disabled = true;
+      if (el.cgExposureVal) el.cgExposureVal.textContent = '0';
+      if (el.cgSaturationVal) el.cgSaturationVal.textContent = '0';
+      if (el.cgContrastVal) el.cgContrastVal.textContent = '0';
+      return;
+    }
+
+    const { clip, source } = target;
+    state.lastRenderedColorClipId = clip.id;
+    const exp = clampColorGrade(clip.exposure);
+    const sat = clampColorGrade(clip.saturation);
+    const con = clampColorGrade(clip.contrast);
+
+    if (el.cgClipTargetLabel) {
+      el.cgClipTargetLabel.textContent = source ? source.name : 'Track 1 Clip';
+      el.cgClipTargetLabel.title = el.cgClipTargetLabel.textContent;
+    }
+
+    el.cgExposureSlider.disabled = false;
+    el.cgSaturationSlider.disabled = false;
+    el.cgContrastSlider.disabled = false;
+    el.cgExposureSlider.value = String(exp);
+    el.cgSaturationSlider.value = String(sat);
+    el.cgContrastSlider.value = String(con);
+    if (el.cgExposureVal) el.cgExposureVal.textContent = formatSignedGrade(exp);
+    if (el.cgSaturationVal) el.cgSaturationVal.textContent = formatSignedGrade(sat);
+    if (el.cgContrastVal) el.cgContrastVal.textContent = formatSignedGrade(con);
+    if (el.cgResetAllBtn) {
+      el.cgResetAllBtn.disabled = exp === 0 && sat === 0 && con === 0;
+    }
   }
 
   function syncToolbarToggles() {
@@ -2532,9 +2749,33 @@
     }
   }
 
+  function buildClipCssFilter(clip) {
+    if (!clip) return '';
+    const exposure = clampColorGrade(clip.exposure);
+    const saturation = clampColorGrade(clip.saturation);
+    const contrast = clampColorGrade(clip.contrast);
+    if (exposure === 0 && saturation === 0 && contrast === 0) return '';
+    const expGain = Math.max(0.05, 1 + exposure / 100);
+    const satGain = Math.max(0, 1 + saturation / 100);
+    const conGain = Math.max(0, 1 + contrast / 100);
+    return `brightness(${expGain}) contrast(${conGain}) saturate(${satGain})`;
+  }
+
+  function applyLiveColorFilterToActiveSlots(clip) {
+    if (!clip) return;
+    const filterCss = buildClipCssFilter(clip);
+    if (state.slotState.A.clipId === clip.id) {
+      el.videoPlayerA.style.filter = filterCss;
+    }
+    if (state.slotState.B.clipId === clip.id) {
+      el.videoPlayerB.style.filter = filterCss;
+    }
+  }
+
   function applyVideoSlotMirror(slot, clip) {
     const player = slot === 'A' ? el.videoPlayerA : el.videoPlayerB;
     player.style.transform = clip && clip.mirrored ? 'scaleX(-1)' : '';
+    player.style.filter = buildClipCssFilter(clip);
   }
 
   function releaseAllMediaBuffers() {
@@ -2548,6 +2789,7 @@
       player.removeAttribute('src');
       player.load();
       player.style.transform = '';
+      player.style.filter = '';
       player.classList.remove('blending');
       state.slotState[slot] = { clipId: null, sourceId: null, preseekedSec: null, pendingSeekSec: null };
     }
@@ -2639,6 +2881,7 @@
         player.removeAttribute('src');
         player.load();
         player.style.transform = '';
+        player.style.filter = '';
         state.slotState[slot] = { clipId: null, sourceId: null, preseekedSec: null, pendingSeekSec: null };
       }
       return player;
@@ -2771,6 +3014,7 @@
       clearBlendAndOverlay();
       setVideoSlotSource('A', null);
       setVideoSlotSource('B', null);
+      renderColorGradingPanel();
       return;
     }
 
@@ -2800,6 +3044,7 @@
 
       el.previewClipBadge.textContent = `${srcA?.name || 'Clip A'} ⟷ ${srcB?.name || 'Clip B'} • 50/50 Transform`;
       el.previewClipBadge.classList.remove('hidden');
+      if (state.lastRenderedColorClipId !== clipA.id) renderColorGradingPanel();
       return;
     }
 
@@ -2842,6 +3087,7 @@
 
     el.previewClipBadge.textContent = formatClipBadgeText(clip, src);
     el.previewClipBadge.classList.remove('hidden');
+    if (state.lastRenderedColorClipId !== clip.id) renderColorGradingPanel();
   }
 
   function updateMasterPlaybackLoop() {
@@ -3013,6 +3259,9 @@
         if (src) {
           el.previewClipBadge.textContent = formatClipBadgeText(clip, src);
           el.previewClipBadge.classList.remove('hidden');
+        }
+        if (state.lastRenderedColorClipId !== clip.id) {
+          renderColorGradingPanel();
         }
       }
     }
@@ -3291,47 +3540,155 @@
   }
 
   // -------------------------------------------------------------------------
-  // Export Modal & Progress Polling
+  // Export Modal & Progress Polling (Quick Export + Custom Export Settings)
   // -------------------------------------------------------------------------
-  function openExportModal() {
+  const DEFAULT_EXPORT_PREFS = {
+    resolution: '1920x1080',
+    codec: 'h264',
+    encoderMode: 'hardware',
+    rateControlMode: 'crf',
+    crf: 18,
+    bitrateMbps: 15,
+    quality: 'high',
+    audioBitrate: '192k',
+  };
+
+  function loadCustomExportPrefs(projectId) {
+    try {
+      const projRaw = projectId ? localStorage.getItem(`gcut_export_prefs_${projectId}`) : null;
+      const sessRaw = sessionStorage.getItem('gcut_export_prefs_session') || localStorage.getItem('gcut_export_prefs_last');
+      const parsed = JSON.parse(projRaw || sessRaw || '{}');
+      return { ...DEFAULT_EXPORT_PREFS, ...(parsed && typeof parsed === 'object' ? parsed : {}) };
+    } catch {
+      return { ...DEFAULT_EXPORT_PREFS };
+    }
+  }
+
+  function saveCustomExportPrefs(projectId, prefs) {
+    try {
+      const serialized = JSON.stringify(prefs);
+      if (projectId) localStorage.setItem(`gcut_export_prefs_${projectId}`, serialized);
+      localStorage.setItem('gcut_export_prefs_last', serialized);
+      sessionStorage.setItem('gcut_export_prefs_session', serialized);
+    } catch {
+      // Ignore storage quota errors
+    }
+  }
+
+  function getResolutionTag(resolution) {
+    if (resolution === '1280x720') return '720p';
+    if (resolution === '3840x2160') return '4k';
+    return '1080p';
+  }
+
+  function buildDefaultExportFilename(resolution, codec) {
+    const rawName = (state.project?.name || 'gcut').trim() || 'gcut';
+    const slug = rawName.replace(/[<>:"/\\|?*\x00-\x1F]+/g, '_').replace(/\s+/g, '_');
+    const resTag = getResolutionTag(resolution);
+    const codecTag = codec === 'h265' ? 'h265' : 'h264';
+    return `${slug}_${resTag}_${codecTag}.mp4`;
+  }
+
+  function syncCustomExportModalHints(forceFilenameSync = false) {
+    if (!el.exportCodecSelect || !el.exportResolutionSelect) return;
+    const hw = state.systemStatus.hwSupport || {};
+    const resolution = el.exportResolutionSelect.value || '1920x1080';
+    const codec = el.exportCodecSelect.value === 'h265' ? 'h265' : 'h264';
+    const encoderMode = el.exportEncoderModeSelect?.value === 'software' ? 'software' : 'hardware';
+    const rateMode = el.exportRateControlSelect?.value || 'crf';
+
+    const hasVt = codec === 'h265' ? hw.hevc_videotoolbox : hw.h264_videotoolbox;
+    if (encoderMode === 'software') {
+      el.exportEncoderText.textContent = `Software encoder selected (${codec === 'h265' ? 'libx265 • -tag:v hvc1' : 'libx264 High Profile'})`;
+    } else if (hasVt) {
+      el.exportEncoderText.textContent = `Hardware VideoToolbox ready (${codec === 'h265' ? 'hevc_videotoolbox • -tag:v hvc1' : 'h264_videotoolbox'} w/ SW fallback)`;
+    } else {
+      el.exportEncoderText.textContent = `VideoToolbox unavailable — automatic software fallback (${codec === 'h265' ? 'libx265' : 'libx264'})`;
+    }
+
+    el.exportCrfRow?.classList.toggle('hidden', rateMode !== 'crf');
+    el.exportBitrateRow?.classList.toggle('hidden', rateMode !== 'bitrate');
+    el.exportPresetRow?.classList.toggle('hidden', rateMode !== 'preset');
+
+    if (el.exportCrfSlider && el.exportCrfInput && el.exportCrfMappedHint) {
+      const crfVal = Math.max(14, Math.min(32, Math.round(Number(el.exportCrfInput.value) || 18)));
+      const vtQ = Math.max(1, Math.min(100, Math.round(100 - crfVal * 1.8)));
+      el.exportCrfMappedHint.textContent = `CRF ${crfVal} • VideoToolbox -q:v ${vtQ}`;
+    }
+
+    if (el.exportBitrateSlider && el.exportBitrateInput && el.exportBitrateMappedHint) {
+      const mbps = Math.max(2, Math.min(80, Math.round(Number(el.exportBitrateInput.value) || 15)));
+      const maxRate = Number((mbps * 1.5).toFixed(2));
+      const bufSize = Number((mbps * 2).toFixed(2));
+      el.exportBitrateMappedHint.textContent = `-b:v ${mbps}M -maxrate ${maxRate}M -bufsize ${bufSize}M`;
+    }
+
+    if (el.exportFilenameInput && (forceFilenameSync || !state.exportFilenameTouched)) {
+      el.exportFilenameInput.value = buildDefaultExportFilename(resolution, codec);
+    }
+  }
+
+  function collectCustomExportPrefs() {
+    const crf = Math.max(14, Math.min(32, Math.round(Number(el.exportCrfInput?.value) || 18)));
+    const bitrateMbps = Math.max(2, Math.min(80, Math.round(Number(el.exportBitrateInput?.value) || 15)));
+    return {
+      resolution: el.exportResolutionSelect?.value || '1920x1080',
+      codec: el.exportCodecSelect?.value === 'h265' ? 'h265' : 'h264',
+      encoderMode: el.exportEncoderModeSelect?.value === 'software' ? 'software' : 'hardware',
+      rateControlMode: el.exportRateControlSelect?.value || 'crf',
+      crf,
+      bitrateMbps,
+      quality: el.exportQualitySelect?.value || 'high',
+      audioBitrate: el.exportAudioBitrateSelect?.value || '192k',
+    };
+  }
+
+  function openCustomExportModal() {
     if (!state.project) return;
     if ((state.project.tracks?.track1 || []).length === 0) {
       showToast('Add at least one clip to Track 1 before exporting.', 'warn');
       return;
     }
-    el.exportFilenameInput.value = `${state.project.name || 'gcut'}_export`;
+
+    const prefs = loadCustomExportPrefs(state.project.id);
+    if (el.exportModalTitle) el.exportModalTitle.textContent = 'Custom Export Settings';
+    el.exportFormArea?.classList.remove('hidden');
+    el.startExportBtn.classList.remove('hidden');
+    el.startExportBtn.disabled = false;
     el.exportProgressArea.classList.add('hidden');
     el.exportDoneActions.classList.add('hidden');
-    el.startExportBtn.disabled = false;
 
-    const hw = state.systemStatus.hwSupport || {};
-    const codec = el.exportCodecSelect.value;
-    const hasVt = codec === 'h265' ? hw.hevc_videotoolbox : hw.h264_videotoolbox;
-    el.exportEncoderText.textContent = hasVt
-      ? `VideoToolbox hardware encoder ready (${codec.toUpperCase()} -allow_sw 1)`
-      : `Software fallback encoder active (${codec === 'h265' ? 'libx265' : 'libx264'})`;
+    if (el.exportResolutionSelect) el.exportResolutionSelect.value = prefs.resolution;
+    if (el.exportCodecSelect) el.exportCodecSelect.value = prefs.codec;
+    if (el.exportEncoderModeSelect) el.exportEncoderModeSelect.value = prefs.encoderMode;
+    if (el.exportRateControlSelect) el.exportRateControlSelect.value = prefs.rateControlMode;
+    if (el.exportCrfSlider) el.exportCrfSlider.value = String(prefs.crf);
+    if (el.exportCrfInput) el.exportCrfInput.value = String(prefs.crf);
+    if (el.exportBitrateSlider) el.exportBitrateSlider.value = String(prefs.bitrateMbps);
+    if (el.exportBitrateInput) el.exportBitrateInput.value = String(prefs.bitrateMbps);
+    if (el.exportQualitySelect) el.exportQualitySelect.value = prefs.quality;
+    if (el.exportAudioBitrateSelect) el.exportAudioBitrateSelect.value = prefs.audioBitrate;
 
+    state.exportFilenameTouched = false;
+    syncCustomExportModalHints(true);
     el.exportModal.classList.remove('hidden');
   }
 
-  async function startExport() {
+  async function runExportJob(exportPayload) {
     if (!state.project) return;
     el.startExportBtn.disabled = true;
     el.exportProgressArea.classList.remove('hidden');
     el.exportDoneActions.classList.add('hidden');
-    el.exportStatusText.textContent = 'Starting single-pass FFmpeg export...';
+    el.exportStatusText.textContent = 'Saving latest edits and starting FFmpeg...';
     el.exportPercentText.textContent = '0%';
     el.exportProgressBar.style.width = '0%';
 
     try {
+      await flushProjectSaveNow();
       const { job } = await apiJson(`/api/projects/${state.project.id}/export`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          codec: el.exportCodecSelect.value,
-          quality: el.exportQualitySelect.value,
-          filename: el.exportFilenameInput.value.trim(),
-        }),
+        body: JSON.stringify(exportPayload),
       });
 
       el.exportStatusText.textContent = `Rendering (${job.encoderUsed})...`;
@@ -3346,6 +3703,7 @@
 
           if (j.status === 'completed') {
             clearInterval(state.exportPollTimer);
+            state.exportPollTimer = null;
             el.exportStatusText.textContent = 'Export complete!';
             el.exportDownloadLink.href = `/api/projects/${state.project.id}/exports/file/${encodeURIComponent(j.filename)}`;
             el.exportSavedPathNote.textContent = `Saved in project exports/${j.filename}`;
@@ -3354,12 +3712,14 @@
             showToast(`Exported ${j.filename}`, 'success');
           } else if (j.status === 'failed') {
             clearInterval(state.exportPollTimer);
+            state.exportPollTimer = null;
             el.exportStatusText.textContent = `Export failed: ${j.error || 'Unknown error'}`;
             el.startExportBtn.disabled = false;
             showToast('FFmpeg export failed', 'error');
           }
         } catch (err) {
           clearInterval(state.exportPollTimer);
+          state.exportPollTimer = null;
           el.exportStatusText.textContent = `Error: ${err.message}`;
           el.startExportBtn.disabled = false;
         }
@@ -3369,6 +3729,43 @@
       el.startExportBtn.disabled = false;
       showToast(err.message, 'error');
     }
+  }
+
+  function triggerQuickExport() {
+    if (!state.project) return;
+    if ((state.project.tracks?.track1 || []).length === 0) {
+      showToast('Add at least one clip to Track 1 before exporting.', 'warn');
+      return;
+    }
+    if (el.exportModalTitle) {
+      el.exportModalTitle.textContent = 'Export Final gCut Video (1080p • H.264 • 192k AAC)';
+    }
+    el.exportFormArea?.classList.add('hidden');
+    el.startExportBtn.classList.add('hidden');
+    el.exportModal.classList.remove('hidden');
+
+    runExportJob({
+      resolution: '1920x1080',
+      codec: 'h264',
+      encoderMode: 'hardware',
+      rateControlMode: 'preset',
+      quality: 'high',
+      audioBitrate: '192k',
+      filename: buildDefaultExportFilename('1920x1080', 'h264'),
+    });
+  }
+
+  function startExport() {
+    if (!state.project) return;
+    const prefs = collectCustomExportPrefs();
+    saveCustomExportPrefs(state.project.id, prefs);
+    const filename =
+      el.exportFilenameInput?.value.trim() ||
+      buildDefaultExportFilename(prefs.resolution, prefs.codec);
+    runExportJob({
+      ...prefs,
+      filename,
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -3735,19 +4132,141 @@
       { passive: false }
     );
 
-    // Export Modal
-    el.exportModalBtn.onclick = openExportModal;
+    // Export & Custom Export Modal
+    el.exportModalBtn.onclick = triggerQuickExport;
+    if (el.customExportBtn) el.customExportBtn.onclick = openCustomExportModal;
     el.closeExportModalBtn.onclick = () => el.exportModal.classList.add('hidden');
     el.cancelExportBtn.onclick = () => el.exportModal.classList.add('hidden');
-    el.exportCodecSelect.onchange = () => {
-      const hw = state.systemStatus.hwSupport || {};
-      const codec = el.exportCodecSelect.value;
-      const hasVt = codec === 'h265' ? hw.hevc_videotoolbox : hw.h264_videotoolbox;
-      el.exportEncoderText.textContent = hasVt
-        ? `VideoToolbox hardware encoder ready (${codec.toUpperCase()} -allow_sw 1)`
-        : `Software fallback encoder active (${codec === 'h265' ? 'libx265' : 'libx264'})`;
+    if (el.exportFilenameInput) {
+      el.exportFilenameInput.oninput = () => {
+        state.exportFilenameTouched = true;
+      };
+    }
+    const onExportParamChange = () => {
+      syncCustomExportModalHints(false);
+      if (state.project) saveCustomExportPrefs(state.project.id, collectCustomExportPrefs());
     };
+    if (el.exportResolutionSelect) el.exportResolutionSelect.onchange = onExportParamChange;
+    if (el.exportCodecSelect) el.exportCodecSelect.onchange = onExportParamChange;
+    if (el.exportEncoderModeSelect) el.exportEncoderModeSelect.onchange = onExportParamChange;
+    if (el.exportRateControlSelect) el.exportRateControlSelect.onchange = onExportParamChange;
+    if (el.exportQualitySelect) el.exportQualitySelect.onchange = onExportParamChange;
+    if (el.exportAudioBitrateSelect) el.exportAudioBitrateSelect.onchange = onExportParamChange;
+
+    if (el.exportCrfSlider && el.exportCrfInput) {
+      const syncCrf = (raw) => {
+        const clamped = Math.max(14, Math.min(32, Math.round(Number(raw) || 18)));
+        el.exportCrfSlider.value = String(clamped);
+        el.exportCrfInput.value = String(clamped);
+        onExportParamChange();
+      };
+      el.exportCrfSlider.oninput = () => syncCrf(el.exportCrfSlider.value);
+      el.exportCrfInput.onchange = () => syncCrf(el.exportCrfInput.value);
+    }
+    if (el.exportBitrateSlider && el.exportBitrateInput) {
+      const syncBr = (raw) => {
+        const clamped = Math.max(2, Math.min(80, Math.round(Number(raw) || 15)));
+        el.exportBitrateSlider.value = String(clamped);
+        el.exportBitrateInput.value = String(clamped);
+        onExportParamChange();
+      };
+      el.exportBitrateSlider.oninput = () => syncBr(el.exportBitrateSlider.value);
+      el.exportBitrateInput.onchange = () => syncBr(el.exportBitrateInput.value);
+    }
     el.startExportBtn.onclick = startExport;
+
+    // Color Grading Sliders (live preview drag + push Undo only on release)
+    const colorSliderSpecs = [
+      { field: 'exposure', slider: el.cgExposureSlider, badge: el.cgExposureVal },
+      { field: 'saturation', slider: el.cgSaturationSlider, badge: el.cgSaturationVal },
+      { field: 'contrast', slider: el.cgContrastSlider, badge: el.cgContrastVal },
+    ];
+    for (const { field, slider, badge } of colorSliderSpecs) {
+      if (!slider) continue;
+      const beginBaseline = () => {
+        const target = getColorGradeTargetClip();
+        if (!target || !target.clip || state.cgPreDragSnapshot) return;
+        state.cgPreDragSnapshot = {
+          field,
+          clipId: target.clip.id,
+          snapshot: captureSnapshot(),
+          startVal: clampColorGrade(target.clip[field]),
+        };
+      };
+      const commitChange = () => {
+        if (!state.cgPreDragSnapshot || state.cgPreDragSnapshot.field !== field) return;
+        const target = getColorGradeTargetClip();
+        const baseline = state.cgPreDragSnapshot;
+        state.cgPreDragSnapshot = null;
+        if (target && target.clip && target.clip.id === baseline.clipId) {
+          const finalVal = clampColorGrade(target.clip[field]);
+          if (finalVal !== baseline.startVal) {
+            const hist = getProjectHistory();
+            hist.undo.push(baseline.snapshot);
+            if (hist.undo.length > 80) hist.undo.shift();
+            hist.redo = [];
+            updateUndoRedoButtons();
+            scheduleAutoSave();
+          }
+        }
+      };
+
+      slider.addEventListener('pointerdown', beginBaseline);
+      slider.addEventListener('keydown', () => beginBaseline());
+      slider.addEventListener('input', () => {
+        const target = getColorGradeTargetClip();
+        if (!target || !target.clip) return;
+        if (!state.cgPreDragSnapshot) beginBaseline();
+        const nextVal = clampColorGrade(slider.value);
+        target.clip[field] = nextVal;
+        if (badge) badge.textContent = formatSignedGrade(nextVal);
+        applyLiveColorFilterToActiveSlots(target.clip);
+        if (el.cgResetAllBtn) {
+          el.cgResetAllBtn.disabled =
+            clampColorGrade(target.clip.exposure) === 0 &&
+            clampColorGrade(target.clip.saturation) === 0 &&
+            clampColorGrade(target.clip.contrast) === 0;
+        }
+      });
+      slider.addEventListener('change', commitChange);
+      slider.addEventListener('pointerup', commitChange);
+      slider.addEventListener('keyup', commitChange);
+      slider.addEventListener('dblclick', () => {
+        const target = getColorGradeTargetClip();
+        if (!target || !target.clip) return;
+        state.cgPreDragSnapshot = null;
+        if (clampColorGrade(target.clip[field]) === 0) return;
+        pushUndoState();
+        target.clip[field] = 0;
+        renderColorGradingPanel();
+        applyLiveColorFilterToActiveSlots(target.clip);
+        syncPreviewAtCurrentFrame();
+        scheduleAutoSave();
+      });
+    }
+    if (el.cgResetAllBtn) {
+      el.cgResetAllBtn.onclick = () => {
+        const target = getColorGradeTargetClip();
+        if (!target || !target.clip) return;
+        const { clip } = target;
+        if (
+          clampColorGrade(clip.exposure) === 0 &&
+          clampColorGrade(clip.saturation) === 0 &&
+          clampColorGrade(clip.contrast) === 0
+        ) {
+          return;
+        }
+        state.cgPreDragSnapshot = null;
+        pushUndoState();
+        clip.exposure = 0;
+        clip.saturation = 0;
+        clip.contrast = 0;
+        renderColorGradingPanel();
+        applyLiveColorFilterToActiveSlots(clip);
+        syncPreviewAtCurrentFrame();
+        scheduleAutoSave();
+      };
+    }
 
     // GitHub Self-Update
     if (el.updateAppBtn) {

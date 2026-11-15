@@ -24,7 +24,9 @@
   <header class="top-toolbar">
     <div class="toolbar-left">
       <div class="brand-chip">
-        <img id="brandLogoImg" src="/LOGO_B.jpg" alt="gCut" class="brand-logo" />
+        <span class="brand-logo-wrap">
+          <img id="brandLogoImg" src="/LOGO_B.jpg" alt="gCut" class="brand-logo" />
+        </span>
         <span class="brand-title">gCut</span>
       </div>
       <div class="project-pill">
@@ -62,10 +64,16 @@
       <button id="themeToggleBtn" class="icon-btn" title="Toggle Day / Night Mode">
         <span id="themeIcon" class="material-symbols-rounded">light_mode</span>
       </button>
-      <button id="exportModalBtn" class="btn btn-primary">
-        <span class="material-symbols-rounded">ios_share</span>
-        <span>Export MP4</span>
-      </button>
+      <div class="export-btn-group">
+        <button id="exportModalBtn" class="btn btn-primary" title="One-click Export (1080p • H.264 • High Quality • 192k AAC)">
+          <span class="material-symbols-rounded">ios_share</span>
+          <span>Export MP4</span>
+        </button>
+        <button id="customExportBtn" class="btn btn-tonal custom-export-trigger-btn" title="Custom Export Settings (Resolution, Codec, CRF/Bitrate, Audio)">
+          <span class="material-symbols-rounded">tune</span>
+          <span>Custom</span>
+        </button>
+      </div>
     </div>
   </header>
 
@@ -139,6 +147,56 @@
               </div>
             </div>
           </div>
+
+          <!-- Per-Clip Color Grading Panel -->
+          <aside id="colorGradingPanel" class="color-grading-panel" aria-label="Color Grading">
+            <div class="cg-header">
+              <div class="cg-title-row">
+                <span class="material-symbols-rounded">tune</span>
+                <span class="cg-title">Color</span>
+              </div>
+              <button id="cgResetAllBtn" type="button" class="btn btn-outlined btn-xs" title="Reset Exposure, Saturation, Contrast to 0" disabled>Reset</button>
+            </div>
+            <div id="cgClipTargetLabel" class="cg-clip-target">No video clip</div>
+
+            <div class="cg-sliders">
+              <div class="cg-group">
+                <div class="cg-label-row">
+                  <label for="cgExposureSlider">Exposure</label>
+                  <span id="cgExposureVal" class="cg-val-badge">0</span>
+                </div>
+                <div class="cg-slider-row">
+                  <span class="cg-sign">−</span>
+                  <input id="cgExposureSlider" class="cg-slider" type="range" min="-100" max="100" step="1" value="0" title="Double-click to reset Exposure to 0" disabled />
+                  <span class="cg-sign">+</span>
+                </div>
+              </div>
+
+              <div class="cg-group">
+                <div class="cg-label-row">
+                  <label for="cgSaturationSlider">Saturation</label>
+                  <span id="cgSaturationVal" class="cg-val-badge">0</span>
+                </div>
+                <div class="cg-slider-row">
+                  <span class="cg-sign">−</span>
+                  <input id="cgSaturationSlider" class="cg-slider" type="range" min="-100" max="100" step="1" value="0" title="Double-click to reset Saturation to 0" disabled />
+                  <span class="cg-sign">+</span>
+                </div>
+              </div>
+
+              <div class="cg-group">
+                <div class="cg-label-row">
+                  <label for="cgContrastSlider">Contrast</label>
+                  <span id="cgContrastVal" class="cg-val-badge">0</span>
+                </div>
+                <div class="cg-slider-row">
+                  <span class="cg-sign">−</span>
+                  <input id="cgContrastSlider" class="cg-slider" type="range" min="-100" max="100" step="1" value="0" title="Double-click to reset Contrast to 0" disabled />
+                  <span class="cg-sign">+</span>
+                </div>
+              </div>
+            </div>
+          </aside>
 
           <!-- Stereo L/R Peak VU Meter -->
           <div class="vu-panel" title="Live Stereo Peak / VU Meter">
@@ -420,28 +478,89 @@
       <div class="modal-header">
         <div class="modal-title-row">
           <span class="material-symbols-rounded">movie</span>
-          <h3>Export Final gCut Video (1920×1080 • 24 fps)</h3>
+          <h3 id="exportModalTitle">Custom Export Settings</h3>
         </div>
         <button id="closeExportModalBtn" class="icon-btn icon-btn-sm" title="Close">
           <span class="material-symbols-rounded">close</span>
         </button>
       </div>
       <div class="modal-body">
-        <div class="export-form">
+        <div id="exportFormArea" class="export-form">
           <label class="field-group">
             <span>Output File Name</span>
-            <input id="exportFilenameInput" type="text" class="input-text" placeholder="my_montage" />
+            <input id="exportFilenameInput" type="text" class="input-text" placeholder="my_montage_1080p_h264.mp4" />
           </label>
+          <div class="field-row">
+            <label class="field-group">
+              <span>Resolution</span>
+              <select id="exportResolutionSelect" class="input-select">
+                <option value="1920x1080" selected>1920×1080 (1080p Full HD - Default)</option>
+                <option value="1280x720">1280×720 (720p HD)</option>
+                <option value="3840x2160">3840×2160 (4K UHD)</option>
+              </select>
+            </label>
+            <label class="field-group">
+              <span>Audio Quality (AAC Bitrate)</span>
+              <select id="exportAudioBitrateSelect" class="input-select">
+                <option value="128k">128 kbps</option>
+                <option value="192k" selected>192 kbps (Default)</option>
+                <option value="256k">256 kbps</option>
+                <option value="320k">320 kbps</option>
+              </select>
+            </label>
+          </div>
           <div class="field-row">
             <label class="field-group">
               <span>Video Codec</span>
               <select id="exportCodecSelect" class="input-select">
-                <option value="h264">H.264 (Universal MP4)</option>
-                <option value="h265">H.265 / HEVC (QuickTime hvc1)</option>
+                <option value="h264" selected>H.264 (MP4 - Standard)</option>
+                <option value="h265">H.265 / HEVC (MP4 - hvc1)</option>
               </select>
             </label>
             <label class="field-group">
-              <span>Compression Quality</span>
+              <span>Encoder Acceleration</span>
+              <select id="exportEncoderModeSelect" class="input-select">
+                <option value="hardware" selected>Hardware Accelerated (VideoToolbox)</option>
+                <option value="software">Software (libx264 / libx265)</option>
+              </select>
+            </label>
+          </div>
+          <label class="field-group">
+            <span>Rate Control Mode</span>
+            <select id="exportRateControlSelect" class="input-select">
+              <option value="crf" selected>Quality Mode (CRF / VideoToolbox Q)</option>
+              <option value="bitrate">Target Bitrate Mode (Mbps)</option>
+              <option value="preset">Quick Preset (Super / High / Medium / Low)</option>
+            </select>
+          </label>
+          <div id="exportCrfRow" class="rate-control-subrow">
+            <div class="field-group">
+              <div class="cg-label-row">
+                <span>Quality Factor (CRF 14–32, lower = higher quality)</span>
+                <span id="exportCrfMappedHint" class="mapped-param-hint">CRF 18 • VideoToolbox -q:v 68</span>
+              </div>
+              <div class="range-num-combo">
+                <input id="exportCrfSlider" type="range" min="14" max="32" step="1" value="18" />
+                <input id="exportCrfInput" type="number" min="14" max="32" step="1" value="18" class="input-num-sm" />
+              </div>
+            </div>
+          </div>
+          <div id="exportBitrateRow" class="rate-control-subrow hidden">
+            <div class="field-group">
+              <div class="cg-label-row">
+                <span>Target Bitrate (2–80 Mbps)</span>
+                <span id="exportBitrateMappedHint" class="mapped-param-hint">-b:v 15M -maxrate 22.5M -bufsize 30M</span>
+              </div>
+              <div class="range-num-combo">
+                <input id="exportBitrateSlider" type="range" min="2" max="80" step="1" value="15" />
+                <input id="exportBitrateInput" type="number" min="2" max="80" step="1" value="15" class="input-num-sm" />
+                <span class="transition-ramp-unit">Mbps</span>
+              </div>
+            </div>
+          </div>
+          <div id="exportPresetRow" class="rate-control-subrow hidden">
+            <label class="field-group">
+              <span>Compression Quality Preset</span>
               <select id="exportQualitySelect" class="input-select">
                 <option value="super" selected>Super (VT q:v 90 / CRF 11)</option>
                 <option value="high">High (VT q:v 85 / CRF 14)</option>
