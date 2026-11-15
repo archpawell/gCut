@@ -115,6 +115,7 @@
             <div id="previewStage" class="preview-stage">
               <video id="videoPlayerA" class="stage-video active" playsinline preload="auto"></video>
               <video id="videoPlayerB" class="stage-video" playsinline preload="auto"></video>
+              <div id="previewTransitionOverlay" class="preview-transition-overlay"></div>
               <div id="previewEmptyOverlay" class="preview-empty">
                 <span class="material-symbols-rounded">videocam_off</span>
                 <p>Track 1 is empty — drag a video clip from Sources to Track 1</p>
@@ -222,6 +223,10 @@
           <button id="reverseToggleBtn" class="btn btn-toggle btn-sm" title="Toggle Reverse Playback">
             <span class="material-symbols-rounded">replay</span>
             <span>Reverse</span>
+          </button>
+          <button id="mirrorToggleBtn" class="btn btn-toggle btn-sm" title="Mirror Horizontally (Left-Right Flip)">
+            <span class="material-symbols-rounded">flip</span>
+            <span>Mirror</span>
           </button>
         </div>
 
@@ -455,6 +460,62 @@
           <span class="material-symbols-rounded">rocket_launch</span>
           <span>Start Export</span>
         </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Track 1 Junction Transition Popover -->
+  <div id="transitionPopover" class="transition-popover hidden" role="dialog" aria-label="Junction Transition">
+    <div class="transition-popover-header">
+      <div class="transition-popover-title">
+        <span class="material-symbols-rounded">transition_dissolve</span>
+        <strong>Junction Transition</strong>
+      </div>
+      <button id="closeTransitionPopoverBtn" class="icon-btn icon-btn-sm" title="Close">
+        <span class="material-symbols-rounded">close</span>
+      </button>
+    </div>
+    <div id="transitionPopoverMeta" class="transition-popover-meta"></div>
+    <div class="transition-options">
+      <button type="button" class="transition-opt-btn" data-transition-type="none">
+        <span class="material-symbols-rounded">content_cut</span>
+        <span class="transition-opt-text">
+          <strong>None</strong>
+          <small>Hard cut (0f overlap)</small>
+        </span>
+      </button>
+      <button type="button" id="transOptTransformBtn" class="transition-opt-btn" data-transition-type="transform">
+        <span class="material-symbols-rounded">blur_on</span>
+        <span class="transition-opt-text">
+          <strong>Transform (1f 50/50 Mix)</strong>
+          <small id="transOptTransformHint">Blends last &amp; first frame (-1f duration)</small>
+        </span>
+      </button>
+      <button type="button" id="transOptFadeBlackBtn" class="transition-opt-btn" data-transition-type="fade_black">
+        <span class="material-symbols-rounded">contrast</span>
+        <span class="transition-opt-text">
+          <strong>Fade Black (#000000)</strong>
+          <small id="transOptFadeBlackHint">Symmetrical ramp + 1f black (+1f duration)</small>
+        </span>
+      </button>
+      <button type="button" id="transOptFadeWhiteBtn" class="transition-opt-btn" data-transition-type="fade_white">
+        <span class="material-symbols-rounded">brightness_high</span>
+        <span class="transition-opt-text">
+          <strong>Fade White (#FFFFFF)</strong>
+          <small id="transOptFadeWhiteHint">Symmetrical ramp + 1f white (+1f duration)</small>
+        </span>
+      </button>
+    </div>
+    <div id="transitionRampRow" class="transition-ramp-row hidden">
+      <div class="transition-ramp-label">
+        <span>Ramp (each side)</span>
+        <small id="transitionRampMaxHint">Max: 1f</small>
+      </div>
+      <div class="transition-ramp-controls">
+        <button type="button" id="transitionRampMinusBtn" class="btn btn-outlined btn-sm" title="-1 frame">−</button>
+        <input id="transitionRampInput" type="number" min="1" step="1" value="4" class="input-num-sm" />
+        <button type="button" id="transitionRampPlusBtn" class="btn btn-outlined btn-sm" title="+1 frame">+</button>
+        <span class="transition-ramp-unit">f</span>
       </div>
     </div>
   </div>

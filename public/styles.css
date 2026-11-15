@@ -574,10 +574,24 @@ code {
   z-index: 2;
 }
 
+.stage-video.blending {
+  opacity: 0.5;
+  z-index: 3;
+}
+
+.preview-transition-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  opacity: 0;
+  pointer-events: none;
+  background: #000000;
+}
+
 .preview-empty {
   position: absolute;
   inset: 0;
-  z-index: 3;
+  z-index: 5;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -598,7 +612,7 @@ code {
   position: absolute;
   top: 10px;
   left: 10px;
-  z-index: 4;
+  z-index: 6;
   background: rgba(0, 0, 0, 0.65);
   color: #FFFFFF;
   font-size: 11px;
@@ -1064,6 +1078,70 @@ code {
   color: #FFFFFF;
 }
 
+.tl-badge.mirror-badge {
+  background: var(--accent-blue);
+  color: #FFFFFF;
+}
+
+/* Junction Transition Button on Track 1 Boundaries */
+.tl-junction-btn {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1.5px solid var(--border-strong);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 8;
+  padding: 0;
+  opacity: 0.72;
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.12s ease, opacity 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+
+.tl-junction-btn .material-symbols-rounded {
+  font-size: 14px;
+}
+
+.tl-junction-btn:hover {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1.14);
+  border-color: var(--accent-blue);
+  color: var(--text-primary);
+}
+
+.tl-junction-btn.active {
+  opacity: 1;
+  background: var(--accent-blue);
+  border-color: #FFFFFF;
+  color: #FFFFFF;
+}
+
+.tl-junction-btn.active.fade-black {
+  background: #111317;
+  border-color: #9AA0A6;
+  color: #FFFFFF;
+}
+
+.tl-junction-btn.active.fade-white {
+  background: #FFFFFF;
+  border-color: var(--accent-blue);
+  color: #111317;
+}
+
+.tl-junction-btn.open {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1.18);
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 1px;
+}
+
 .tl-clip-footer {
   position: relative;
   z-index: 2;
@@ -1462,4 +1540,137 @@ code {
 
 .toast.warn {
   border-left-color: var(--accent-amber);
+}
+
+/* Junction Transition Popover */
+.transition-popover {
+  position: fixed;
+  z-index: 180;
+  width: 288px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  box-shadow: var(--shadow-lg);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.transition-popover-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.transition-popover-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.transition-popover-title .material-symbols-rounded {
+  font-size: 18px;
+  color: var(--accent-blue);
+}
+
+.transition-popover-meta {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.transition-options {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.transition-opt-btn {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-canvas);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.transition-opt-btn:hover:not(:disabled) {
+  border-color: var(--accent-blue);
+  background: var(--bg-elevated);
+}
+
+.transition-opt-btn.selected {
+  border-color: var(--accent-blue);
+  background: var(--accent-blue-soft);
+}
+
+.transition-opt-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.transition-opt-btn .material-symbols-rounded {
+  font-size: 18px;
+  color: var(--accent-blue);
+  flex-shrink: 0;
+}
+
+.transition-opt-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.transition-opt-text strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.transition-opt-text small {
+  font-size: 10.5px;
+  color: var(--text-secondary);
+}
+
+.transition-ramp-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.transition-ramp-label {
+  display: flex;
+  flex-direction: column;
+  font-size: 11.5px;
+}
+
+.transition-ramp-label small {
+  font-size: 10.5px;
+  color: var(--text-secondary);
+}
+
+.transition-ramp-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.transition-ramp-unit {
+  font-size: 11px;
+  color: var(--text-secondary);
 }

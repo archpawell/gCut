@@ -59,6 +59,7 @@
     // Drag / trim interaction state
     dragSourceId: null,
     exportPollTimer: null,
+    transitionPopover: null, // { fromClipId, toClipId }
   };
 
   // -------------------------------------------------------------------------
@@ -90,6 +91,7 @@
     previewStage: document.getElementById('previewStage'),
     videoPlayerA: document.getElementById('videoPlayerA'),
     videoPlayerB: document.getElementById('videoPlayerB'),
+    previewTransitionOverlay: document.getElementById('previewTransitionOverlay'),
     previewEmptyOverlay: document.getElementById('previewEmptyOverlay'),
     previewClipBadge: document.getElementById('previewClipBadge'),
     vuMeterCanvas: document.getElementById('vuMeterCanvas'),
@@ -115,6 +117,7 @@
     speedPresetSelect: document.getElementById('speedPresetSelect'),
     speedFineInput: document.getElementById('speedFineInput'),
     reverseToggleBtn: document.getElementById('reverseToggleBtn'),
+    mirrorToggleBtn: document.getElementById('mirrorToggleBtn'),
     audioInspectorGroup: document.getElementById('audioInspectorGroup'),
     volumeRange: document.getElementById('volumeRange'),
     volumeLabel: document.getElementById('volumeLabel'),
@@ -166,6 +169,21 @@
     exportSavedPathNote: document.getElementById('exportSavedPathNote'),
     cancelExportBtn: document.getElementById('cancelExportBtn'),
     startExportBtn: document.getElementById('startExportBtn'),
+
+    transitionPopover: document.getElementById('transitionPopover'),
+    closeTransitionPopoverBtn: document.getElementById('closeTransitionPopoverBtn'),
+    transitionPopoverMeta: document.getElementById('transitionPopoverMeta'),
+    transOptTransformBtn: document.getElementById('transOptTransformBtn'),
+    transOptTransformHint: document.getElementById('transOptTransformHint'),
+    transOptFadeBlackBtn: document.getElementById('transOptFadeBlackBtn'),
+    transOptFadeBlackHint: document.getElementById('transOptFadeBlackHint'),
+    transOptFadeWhiteBtn: document.getElementById('transOptFadeWhiteBtn'),
+    transOptFadeWhiteHint: document.getElementById('transOptFadeWhiteHint'),
+    transitionRampRow: document.getElementById('transitionRampRow'),
+    transitionRampMaxHint: document.getElementById('transitionRampMaxHint'),
+    transitionRampMinusBtn: document.getElementById('transitionRampMinusBtn'),
+    transitionRampInput: document.getElementById('transitionRampInput'),
+    transitionRampPlusBtn: document.getElementById('transitionRampPlusBtn'),
 
     toastContainer: document.getElementById('toastContainer'),
   };
@@ -236,19 +254,187 @@
     return (state.project.sources || []).find((s) => s.id === sourceId) || null;
   }
 
+  function normalizeProjectModel(project) {
+    if (!project || typeof project !== 'object') return project;
+    if (!project.tracks || typeof project.tracks !== 'object') {
+      project.tracks = { track1: [], track2: [], track3: [] };
+    }
+    project.tracks.track1 = Array.isArray(project.tracks.track1)
+      ? project.tracks.track1.map((c) => ({ ...c, mirrored: Boolean(c.mirrored) }))
+      : [];
+    project.tracks.track2 = Array.isArray(project.tracks.track2) ? project.tracks.track2 : [];
+    project.tracks.track3 = Array.isArray(project.tracks.track3) ? project.tracks.track3 : [];
+    project.transitions = Array.isArray(project.transitions)
+      ? project.transitions
+          .filter(
+            (t) =>
+              t &&
+              typeof t.fromClipId === 'string' &&
+              typeof t.toClipId === 'string' &&
+              ['transform', 'fade_black', 'fade_white'].includes(t.type)
+          )
+          .map((t) => ({
+            fromClipId: t.fromClipId,
+            toClipId: t.toClipId,
+            type: t.type,
+            rampFrames: t.type === 'transform' ? 1 : Math.max(1, Math.round(Number(t.rampFrames) || 1)),
+          }))
+      : [];
+    return project;
+  }
+
   function getClipDurationFrames(clip, trackKey) {
     const span = Math.max(1, (clip.outFrame || 0) - (clip.inFrame || 0));
     if (trackKey === 'track1') {
       const speed = Number(clip.speed) > 0 ? Number(clip.speed) : 1;
-      return Math.max(1, Math.round(span / speed));
+      return Math.max(1, Math.floor(span / speed));
     }
     return span;
+  }
+
+  function getTransitionNetDelta(type) {
+    if (type === 'transform') return -1;
+    if (type === 'fade_black' || type === 'fade_white') return 1;
+    return 0;
+  }
+
+  function getTransitionFootprintFrames(t) {
+    if (!t) return 0;
+    if (t.type === 'transform') return 1;
+    if (t.type === 'fade_black' || t.type === 'fade_white') {
+      return Math.max(1, Math.round(Number(t.rampFrames) || 1));
+    }
+    return 0;
+  }
+
+  function getAdjacentTransition(fromClipId, toClipId) {
+    if (!state.project || !fromClipId || !toClipId) return null;
+    return (
+      (state.project.transitions || []).find(
+        (t) => t.fromClipId === fromClipId && t.toClipId === toClipId
+      ) || null
+    );
+  }
+
+  function getMinRequiredFramesForTransitions(leftTrans, rightTrans) {
+    const leftFrames = getTransitionFootprintFrames(leftTrans);
+    const rightFrames = getTransitionFootprintFrames(rightTrans);
+    let minTypeFrames = 1;
+    if (
+      (leftTrans && (leftTrans.type === 'fade_black' || leftTrans.type === 'fade_white')) ||
+      (rightTrans && (rightTrans.type === 'fade_black' || rightTrans.type === 'fade_white'))
+    ) {
+      minTypeFrames = 7;
+    } else if (
+      (leftTrans && leftTrans.type === 'transform') ||
+      (rightTrans && rightTrans.type === 'transform')
+    ) {
+      minTypeFrames = 3;
+    }
+    return Math.max(minTypeFrames, leftFrames + rightFrames + 1);
+  }
+
+  function getClipTransitionInfo(clipId) {
+    const t1 = state.project?.tracks?.track1 || [];
+    const idx = t1.findIndex((c) => c.id === clipId);
+    const leftTransition = idx > 0 ? getAdjacentTransition(t1[idx - 1].id, clipId) : null;
+    const rightTransition =
+      idx >= 0 && idx < t1.length - 1 ? getAdjacentTransition(clipId, t1[idx + 1].id) : null;
+    const leftTransitionFrames = getTransitionFootprintFrames(leftTransition);
+    const rightTransitionFrames = getTransitionFootprintFrames(rightTransition);
+    const minAllowedFrames = getMinRequiredFramesForTransitions(leftTransition, rightTransition);
+    return {
+      leftTransition,
+      rightTransition,
+      leftTransitionFrames,
+      rightTransitionFrames,
+      minAllowedFrames,
+    };
+  }
+
+  function getMaxRampFrames(clipA, clipB) {
+    const infoA = getClipTransitionInfo(clipA.id);
+    const infoB = getClipTransitionInfo(clipB.id);
+    const durA = getClipDurationFrames(clipA, 'track1');
+    const durB = getClipDurationFrames(clipB, 'track1');
+    return Math.max(
+      0,
+      Math.min(durA - 1 - infoA.leftTransitionFrames, durB - 1 - infoB.rightTransitionFrames)
+    );
+  }
+
+  function snapshotValidJunctions() {
+    if (!state.project) return [];
+    const t1 = state.project.tracks?.track1 || [];
+    const snaps = [];
+    for (let i = 0; i < t1.length - 1; i += 1) {
+      const a = t1[i];
+      const b = t1[i + 1];
+      const t = getAdjacentTransition(a.id, b.id);
+      if (!t) continue;
+      snaps.push({
+        fromClipId: a.id,
+        toClipId: b.id,
+        type: t.type,
+        rampFrames: t.rampFrames,
+        delta: getTransitionNetDelta(t.type),
+        junctionFrame: b.timelineStartFrame || 0,
+      });
+    }
+    return snaps;
+  }
+
+  function pruneInvalidTransitionsAndRestoreAudio(beforeJunctions = []) {
+    if (!state.project) return;
+    const t1 = state.project.tracks?.track1 || [];
+    const validPairs = new Set();
+    for (let i = 0; i < t1.length - 1; i += 1) {
+      validPairs.add(`${t1[i].id}::${t1[i + 1].id}`);
+    }
+
+    const survivingKeys = new Set();
+    state.project.transitions = (state.project.transitions || []).filter((t) => {
+      const key = `${t.fromClipId}::${t.toClipId}`;
+      if (!validPairs.has(key)) return false;
+      const a = t1.find((c) => c.id === t.fromClipId);
+      const b = t1.find((c) => c.id === t.toClipId);
+      if (!a || !b) return false;
+      const durA = getClipDurationFrames(a, 'track1');
+      const durB = getClipDurationFrames(b, 'track1');
+      if (t.type === 'transform' && (durA < 3 || durB < 3)) return false;
+      if ((t.type === 'fade_black' || t.type === 'fade_white') && (durA < 7 || durB < 7)) return false;
+      survivingKeys.add(key);
+      return true;
+    });
+
+    // Restore downstream audio for transitions that became invalid during reorder/insert
+    const removed = beforeJunctions
+      .filter((s) => !survivingKeys.has(`${s.fromClipId}::${s.toClipId}`))
+      .sort((x, y) => y.junctionFrame - x.junctionFrame);
+    for (const s of removed) {
+      const restoreShift = -s.delta;
+      if (restoreShift > 0) {
+        shiftAudioFromSegmentStart(s.junctionFrame, restoreShift);
+      } else if (restoreShift < 0) {
+        applyAudioCutRipple(s.junctionFrame + restoreShift, s.junctionFrame);
+      }
+    }
+
+    repackTrack1();
   }
 
   function getTotalTrack1Frames() {
     if (!state.project) return 0;
     const t1 = state.project.tracks?.track1 || [];
-    return t1.reduce((sum, clip) => sum + getClipDurationFrames(clip, 'track1'), 0);
+    let total = 0;
+    for (let i = 0; i < t1.length; i += 1) {
+      total += getClipDurationFrames(t1[i], 'track1');
+      if (i < t1.length - 1) {
+        const t = getAdjacentTransition(t1[i].id, t1[i + 1].id);
+        if (t) total += getTransitionNetDelta(t.type);
+      }
+    }
+    return Math.max(0, total);
   }
 
   function getTotalProjectFrames() {
@@ -265,10 +451,15 @@
 
   function repackTrack1() {
     if (!state.project) return;
+    const t1 = state.project.tracks.track1;
     let cursor = 0;
-    for (const clip of state.project.tracks.track1) {
-      clip.timelineStartFrame = cursor;
-      cursor += getClipDurationFrames(clip, 'track1');
+    for (let i = 0; i < t1.length; i += 1) {
+      t1[i].timelineStartFrame = cursor;
+      cursor += getClipDurationFrames(t1[i], 'track1');
+      if (i < t1.length - 1) {
+        const t = getAdjacentTransition(t1[i].id, t1[i + 1].id);
+        if (t) cursor += getTransitionNetDelta(t.type);
+      }
     }
   }
 
@@ -279,6 +470,23 @@
         const curStart = clip.timelineStartFrame || 0;
         if (curStart >= segmentStartFrame) {
           clip.timelineStartFrame = Math.max(0, Math.round(curStart + deltaFrames));
+        }
+      }
+    }
+  }
+
+  function applyAudioCutRipple(cutStartFrame, cutEndFrame) {
+    if (!state.project || cutEndFrame <= cutStartFrame) return;
+    const removedFrames = cutEndFrame - cutStartFrame;
+    const safeSnap = Math.max(0, Math.round(cutStartFrame));
+    for (const tk of ['track2', 'track3']) {
+      for (const clip of state.project.tracks[tk]) {
+        const curStart = clip.timelineStartFrame || 0;
+        if (curStart < cutStartFrame) continue;
+        if (curStart >= cutEndFrame) {
+          clip.timelineStartFrame = Math.max(0, Math.round(curStart - removedFrames));
+        } else {
+          clip.timelineStartFrame = safeSnap;
         }
       }
     }
@@ -453,6 +661,7 @@
     if (!state.project) return '';
     return JSON.stringify({
       tracks: state.project.tracks,
+      transitions: state.project.transitions || [],
       snapEnabled: state.project.snapEnabled,
       rippleSyncAudio: state.project.rippleSyncAudio,
     });
@@ -470,8 +679,11 @@
   function restoreSnapshot(snapJson) {
     const snap = JSON.parse(snapJson);
     state.project.tracks = snap.tracks;
+    state.project.transitions = Array.isArray(snap.transitions) ? snap.transitions : [];
     state.project.snapEnabled = snap.snapEnabled;
     state.project.rippleSyncAudio = snap.rippleSyncAudio;
+    normalizeProjectModel(state.project);
+    closeTransitionPopover();
     repackTrack1();
     syncToolbarToggles();
     renderTimelineAndInspector();
@@ -529,6 +741,7 @@
             rippleSyncAudio: state.project.rippleSyncAudio,
             sources: state.project.sources,
             tracks: state.project.tracks,
+            transitions: state.project.transitions || [],
           }),
         });
         state.isDirty = false;
@@ -547,8 +760,9 @@
     releaseAllMediaBuffers();
 
     const { project } = await apiJson(`/api/projects/${projectId}`);
-    state.project = project;
+    state.project = normalizeProjectModel(project);
     state.selectedClip = null;
+    closeTransitionPopover();
     state.playheadFrame = 0;
     localStorage.setItem('montage_last_project', project.id);
 
@@ -1013,6 +1227,7 @@
       return;
     }
 
+    closeTransitionPopover();
     pushUndoState();
 
     const newClip = {
@@ -1022,6 +1237,7 @@
       outFrame: Math.max(1, src.totalFrames || 24),
       speed: 1.0,
       reversed: false,
+      mirrored: false,
       timelineStartFrame: Math.max(0, Math.round(dropFrame)),
       volume: 1.0,
       fadeInSec: 0.0,
@@ -1029,6 +1245,7 @@
     };
 
     if (trackKey === 'track1') {
+      const beforeJunctions = snapshotValidJunctions();
       const t1 = state.project.tracks.track1;
       let insertIndex = t1.length;
       for (let i = 0; i < t1.length; i += 1) {
@@ -1043,7 +1260,7 @@
         ? (t1[insertIndex].timelineStartFrame || 0)
         : getTotalTrack1Frames();
       t1.splice(insertIndex, 0, newClip);
-      repackTrack1();
+      pruneInvalidTransitionsAndRestoreAudio(beforeJunctions);
       shiftAudioFromSegmentStart(insertAtFrame, getClipDurationFrames(newClip, 'track1'));
     } else {
       state.project.tracks[trackKey].push(newClip);
@@ -1067,16 +1284,28 @@
   function deleteSelectedClip() {
     const sel = getSelectedClipObj();
     if (!sel) return;
+    closeTransitionPopover();
     pushUndoState();
     const list = state.project.tracks[sel.trackKey];
     const idx = list.findIndex((c) => c.id === sel.clip.id);
     if (idx !== -1) {
-      const removedDur = getClipDurationFrames(sel.clip, sel.trackKey);
-      const removedStart = sel.clip.timelineStartFrame || 0;
-      list.splice(idx, 1);
       if (sel.trackKey === 'track1') {
+        const oldRightBoundary =
+          idx < list.length - 1
+            ? (list[idx + 1].timelineStartFrame || 0)
+            : (sel.clip.timelineStartFrame || 0) + getClipDurationFrames(sel.clip, 'track1');
+        list.splice(idx, 1);
+        state.project.transitions = (state.project.transitions || []).filter(
+          (t) => t.fromClipId !== sel.clip.id && t.toClipId !== sel.clip.id
+        );
         repackTrack1();
-        shiftAudioFromSegmentStart(removedStart, -removedDur);
+        const newRightBoundary =
+          idx < list.length ? (list[idx].timelineStartFrame || 0) : getTotalTrack1Frames();
+        if (oldRightBoundary > newRightBoundary) {
+          applyAudioCutRipple(newRightBoundary, oldRightBoundary);
+        }
+      } else {
+        list.splice(idx, 1);
       }
     }
     state.selectedClip = null;
@@ -1179,12 +1408,40 @@
       return;
     }
 
+    if (target.trackKey === 'track1') {
+      const info = getClipTransitionInfo(target.clip.id);
+      const leftMin = getMinRequiredFramesForTransitions(info.leftTransition, null);
+      const rightMin = getMinRequiredFramesForTransitions(null, info.rightTransition);
+      const leftDur = getClipDurationFrames(segs.leftSeg, 'track1');
+      const rightDur = getClipDurationFrames(segs.rightSeg, 'track1');
+      if (leftDur < leftMin || rightDur < rightMin) {
+        showToast(
+          `Split blocked: attached transitions require at least ${leftMin}f (left) and ${rightMin}f (right).`,
+          'warn'
+        );
+        return;
+      }
+    }
+
+    closeTransitionPopover();
     pushUndoState();
+    const totalBefore = target.trackKey === 'track1' ? getTotalTrack1Frames() : 0;
     const list = state.project.tracks[target.trackKey];
     const idx = list.findIndex((c) => c.id === target.clip.id);
     list.splice(idx, 1, segs.leftSeg, segs.rightSeg);
+
     if (target.trackKey === 'track1') {
+      // Transfer any outgoing transition ownership from original clip ID to rightSeg
+      for (const t of state.project.transitions || []) {
+        if (t.fromClipId === target.clip.id) {
+          t.fromClipId = segs.rightSeg.id;
+        }
+      }
       repackTrack1();
+      const totalAfter = getTotalTrack1Frames();
+      if (totalAfter < totalBefore) {
+        applyAudioCutRipple(target.end - (totalBefore - totalAfter), target.end);
+      }
     }
 
     state.selectedClip = { trackKey: target.trackKey, clipId: segs.rightSeg.id };
@@ -1202,18 +1459,36 @@
     const segs = computeSplitSegments(target, frame);
     if (!segs) return;
 
-    pushUndoState();
     const { trackKey, clip, start } = target;
+    const rightSeg = trackKey === 'track1' ? { ...segs.rightSeg, id: clip.id } : segs.rightSeg;
+    if (trackKey === 'track1') {
+      const info = getClipTransitionInfo(clip.id);
+      const newDur = getClipDurationFrames(rightSeg, 'track1');
+      if (newDur < info.minAllowedFrames) {
+        showToast(
+          `Trim Left blocked: attached transition requires at least ${info.minAllowedFrames} frames.`,
+          'warn'
+        );
+        return;
+      }
+    }
+
+    closeTransitionPopover();
+    pushUndoState();
     const oldDur = getClipDurationFrames(clip, trackKey);
     const list = state.project.tracks[trackKey];
     const idx = list.findIndex((c) => c.id === clip.id);
-    const rightSeg = segs.rightSeg;
     list.splice(idx, 1, rightSeg);
 
     if (trackKey === 'track1') {
       repackTrack1();
       const newDur = getClipDurationFrames(rightSeg, 'track1');
-      shiftAudioFromSegmentStart(start, newDur - oldDur);
+      const removedFrames = oldDur - newDur;
+      if (removedFrames > 0) {
+        applyAudioCutRipple(start, start + removedFrames);
+      } else if (removedFrames < 0) {
+        shiftAudioFromSegmentStart(start, -removedFrames);
+      }
       state.playheadFrame = rightSeg.timelineStartFrame;
     } else {
       rightSeg.timelineStartFrame = frame;
@@ -1234,18 +1509,36 @@
     const segs = computeSplitSegments(target, frame);
     if (!segs) return;
 
-    pushUndoState();
     const { trackKey, clip, start } = target;
+    const leftSeg = segs.leftSeg;
+    if (trackKey === 'track1') {
+      const info = getClipTransitionInfo(clip.id);
+      const newDur = getClipDurationFrames(leftSeg, 'track1');
+      if (newDur < info.minAllowedFrames) {
+        showToast(
+          `Trim Right blocked: attached transition requires at least ${info.minAllowedFrames} frames.`,
+          'warn'
+        );
+        return;
+      }
+    }
+
+    closeTransitionPopover();
+    pushUndoState();
     const oldDur = getClipDurationFrames(clip, trackKey);
     const list = state.project.tracks[trackKey];
     const idx = list.findIndex((c) => c.id === clip.id);
-    const leftSeg = segs.leftSeg;
     list.splice(idx, 1, leftSeg);
 
     if (trackKey === 'track1') {
       repackTrack1();
       const newDur = getClipDurationFrames(leftSeg, 'track1');
-      shiftAudioFromSegmentStart(start, newDur - oldDur);
+      const removedFrames = oldDur - newDur;
+      if (removedFrames > 0) {
+        applyAudioCutRipple(start + newDur, start + oldDur);
+      } else if (removedFrames < 0) {
+        shiftAudioFromSegmentStart(start + oldDur, -removedFrames);
+      }
     } else {
       leftSeg.timelineStartFrame = start;
     }
@@ -1418,6 +1711,12 @@
             rev.textContent = 'REV';
             pills.appendChild(rev);
           }
+          if (clip.mirrored) {
+            const mir = document.createElement('span');
+            mir.className = 'tl-badge mirror-badge';
+            mir.textContent = 'MIR';
+            pills.appendChild(mir);
+          }
         }
         header.append(title, pills);
 
@@ -1460,18 +1759,258 @@
 
         lane.el.appendChild(clipEl);
       }
+
+      if (lane.key === 'track1' && clips.length > 1) {
+        for (let i = 0; i < clips.length - 1; i += 1) {
+          const clipA = clips[i];
+          const clipB = clips[i + 1];
+          const durA = getClipDurationFrames(clipA, 'track1');
+          const endA = (clipA.timelineStartFrame || 0) + durA;
+          const t = getAdjacentTransition(clipA.id, clipB.id);
+
+          let boundaryFrame = endA;
+          if (t && t.type === 'transform') boundaryFrame = endA - 0.5;
+          else if (t && (t.type === 'fade_black' || t.type === 'fade_white')) boundaryFrame = endA + 0.5;
+
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'tl-junction-btn';
+          btn.style.left = `${boundaryFrame * state.pxPerFrame}px`;
+
+          let iconName = 'commit';
+          let titleText = 'Add transition between clips';
+          if (t && t.type === 'transform') {
+            btn.classList.add('active');
+            iconName = 'blur_on';
+            titleText = 'Transform (1f 50/50 Mix)';
+          } else if (t && t.type === 'fade_black') {
+            btn.classList.add('active', 'fade-black');
+            iconName = 'contrast';
+            titleText = `Fade Black (±${t.rampFrames}f)`;
+          } else if (t && t.type === 'fade_white') {
+            btn.classList.add('active', 'fade-white');
+            iconName = 'brightness_high';
+            titleText = `Fade White (±${t.rampFrames}f)`;
+          }
+
+          if (
+            state.transitionPopover &&
+            state.transitionPopover.fromClipId === clipA.id &&
+            state.transitionPopover.toClipId === clipB.id
+          ) {
+            btn.classList.add('open');
+          }
+
+          btn.title = titleText;
+          btn.innerHTML = `<span class="material-symbols-rounded">${iconName}</span>`;
+          btn.addEventListener('mousedown', (e) => e.stopPropagation());
+          btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            openTransitionPopover(clipA, clipB, btn);
+          });
+          lane.el.appendChild(btn);
+        }
+      }
     }
+  }
+
+  function closeTransitionPopover() {
+    state.transitionPopover = null;
+    if (el.transitionPopover) {
+      el.transitionPopover.classList.add('hidden');
+    }
+    Array.from(document.querySelectorAll('.tl-junction-btn.open')).forEach((b) =>
+      b.classList.remove('open')
+    );
+  }
+
+  function refreshTransitionPopoverUI() {
+    if (!state.transitionPopover || !state.project) return;
+    const t1 = state.project.tracks?.track1 || [];
+    const idx = t1.findIndex((c) => c.id === state.transitionPopover.fromClipId);
+    if (idx === -1 || !t1[idx + 1] || t1[idx + 1].id !== state.transitionPopover.toClipId) {
+      closeTransitionPopover();
+      return;
+    }
+
+    const clipA = t1[idx];
+    const clipB = t1[idx + 1];
+    const srcA = getSourceById(clipA.sourceId);
+    const srcB = getSourceById(clipB.sourceId);
+    const durA = getClipDurationFrames(clipA, 'track1');
+    const durB = getClipDurationFrames(clipB, 'track1');
+    const activeTrans = getAdjacentTransition(clipA.id, clipB.id);
+    const activeType = activeTrans ? activeTrans.type : 'none';
+
+    el.transitionPopoverMeta.textContent = `${srcA?.name || 'Clip A'} (${durA}f) → ${srcB?.name || 'Clip B'} (${durB}f)`;
+
+    const canTransform = durA >= 3 && durB >= 3;
+    const maxRamp = getMaxRampFrames(clipA, clipB);
+    const canFade = durA >= 7 && durB >= 7 && maxRamp >= 1;
+
+    el.transOptTransformBtn.disabled = !canTransform;
+    el.transOptTransformHint.textContent = canTransform
+      ? 'Blends last & first frame (-1f duration)'
+      : 'Requires >= 3 frames on both clips';
+
+    el.transOptFadeBlackBtn.disabled = !canFade;
+    el.transOptFadeBlackHint.textContent = canFade
+      ? 'Symmetrical ramp + 1f black (+1f duration)'
+      : 'Requires >= 7 frames each + body room';
+
+    el.transOptFadeWhiteBtn.disabled = !canFade;
+    el.transOptFadeWhiteHint.textContent = canFade
+      ? 'Symmetrical ramp + 1f white (+1f duration)'
+      : 'Requires >= 7 frames each + body room';
+
+    Array.from(el.transitionPopover.querySelectorAll('.transition-opt-btn')).forEach((b) => {
+      b.classList.toggle('selected', b.dataset.transitionType === activeType);
+    });
+
+    const isFade = activeType === 'fade_black' || activeType === 'fade_white';
+    el.transitionRampRow.classList.toggle('hidden', !isFade || maxRamp < 1);
+    if (isFade && maxRamp >= 1) {
+      const rampVal = Math.max(1, Math.min(maxRamp, activeTrans.rampFrames || 4));
+      el.transitionRampInput.min = '1';
+      el.transitionRampInput.max = String(maxRamp);
+      el.transitionRampInput.value = String(rampVal);
+      el.transitionRampMaxHint.textContent = `Max: ${maxRamp}f (span ${2 * rampVal + 1}f)`;
+      el.transitionRampMinusBtn.disabled = rampVal <= 1;
+      el.transitionRampPlusBtn.disabled = rampVal >= maxRamp;
+    }
+  }
+
+  function openTransitionPopover(clipA, clipB, anchorBtn) {
+    if (
+      state.transitionPopover &&
+      state.transitionPopover.fromClipId === clipA.id &&
+      state.transitionPopover.toClipId === clipB.id
+    ) {
+      closeTransitionPopover();
+      return;
+    }
+
+    state.transitionPopover = { fromClipId: clipA.id, toClipId: clipB.id };
+    el.transitionPopover.classList.remove('hidden');
+    refreshTransitionPopoverUI();
+
+    const btnRect = anchorBtn.getBoundingClientRect();
+    const popRect = el.transitionPopover.getBoundingClientRect();
+    const popW = popRect.width || 288;
+    const popH = popRect.height || 260;
+
+    let left = Math.round(btnRect.left + btnRect.width / 2 - popW / 2);
+    left = Math.max(8, Math.min(window.innerWidth - popW - 8, left));
+
+    let top = Math.round(btnRect.top - popH - 10);
+    if (top < 8) {
+      top = Math.round(btnRect.bottom + 10);
+    }
+    top = Math.max(8, Math.min(window.innerHeight - popH - 8, top));
+
+    el.transitionPopover.style.left = `${left}px`;
+    el.transitionPopover.style.top = `${top}px`;
+
+    Array.from(document.querySelectorAll('.tl-junction-btn')).forEach((b) =>
+      b.classList.toggle('open', b === anchorBtn)
+    );
+  }
+
+  function applyJunctionTransition(nextType, explicitRamp = null) {
+    if (!state.transitionPopover || !state.project) return;
+    const t1 = state.project.tracks?.track1 || [];
+    const idx = t1.findIndex((c) => c.id === state.transitionPopover.fromClipId);
+    if (idx === -1 || !t1[idx + 1] || t1[idx + 1].id !== state.transitionPopover.toClipId) {
+      closeTransitionPopover();
+      return;
+    }
+
+    const clipA = t1[idx];
+    const clipB = t1[idx + 1];
+    const durA = getClipDurationFrames(clipA, 'track1');
+    const durB = getClipDurationFrames(clipB, 'track1');
+    const maxRamp = getMaxRampFrames(clipA, clipB);
+
+    if (nextType === 'transform' && (durA < 3 || durB < 3)) {
+      showToast('Transform requires both adjacent clips to be at least 3 frames.', 'warn');
+      return;
+    }
+    if ((nextType === 'fade_black' || nextType === 'fade_white') && (durA < 7 || durB < 7 || maxRamp < 1)) {
+      showToast('Fade transitions require both adjacent clips to be at least 7 frames.', 'warn');
+      return;
+    }
+
+    const existingIdx = (state.project.transitions || []).findIndex(
+      (t) => t.fromClipId === clipA.id && t.toClipId === clipB.id
+    );
+    const existing = existingIdx !== -1 ? state.project.transitions[existingIdx] : null;
+    const oldDelta = getTransitionNetDelta(existing?.type);
+    const newDelta = getTransitionNetDelta(nextType);
+    const oldClipBStart = clipB.timelineStartFrame || 0;
+
+    let desiredRamp = 1;
+    if (nextType === 'fade_black' || nextType === 'fade_white') {
+      const baseRamp =
+        explicitRamp !== null
+          ? Number(explicitRamp)
+          : (existing && (existing.type === 'fade_black' || existing.type === 'fade_white')
+              ? existing.rampFrames
+              : Math.min(4, maxRamp));
+      desiredRamp = Math.max(1, Math.min(maxRamp, Math.round(baseRamp) || 1));
+    }
+
+    if (
+      (nextType === 'none' && !existing) ||
+      (existing && existing.type === nextType && (nextType !== 'fade_black' && nextType !== 'fade_white' || existing.rampFrames === desiredRamp))
+    ) {
+      if (nextType === 'none' || nextType === 'transform') closeTransitionPopover();
+      return;
+    }
+
+    pushUndoState();
+    if (!Array.isArray(state.project.transitions)) state.project.transitions = [];
+    if (nextType === 'none') {
+      if (existingIdx !== -1) state.project.transitions.splice(existingIdx, 1);
+    } else {
+      const nextObj = {
+        fromClipId: clipA.id,
+        toClipId: clipB.id,
+        type: nextType,
+        rampFrames: desiredRamp,
+      };
+      if (existingIdx !== -1) state.project.transitions[existingIdx] = nextObj;
+      else state.project.transitions.push(nextObj);
+    }
+
+    repackTrack1();
+    const netDelta = newDelta - oldDelta;
+    if (netDelta > 0) {
+      shiftAudioFromSegmentStart(oldClipBStart, netDelta);
+    } else if (netDelta < 0) {
+      applyAudioCutRipple(oldClipBStart + netDelta, oldClipBStart);
+    }
+
+    renderTimelineAndInspector();
+    if (nextType === 'none' || nextType === 'transform') {
+      closeTransitionPopover();
+    } else {
+      refreshTransitionPopoverUI();
+    }
+    syncPreviewAtCurrentFrame();
+    scheduleAutoSave();
   }
 
   function startClipDrag(downEvent, trackKey, clip, clipEl) {
     const startX = downEvent.clientX;
     const origStartFrame = clip.timelineStartFrame || 0;
+    const beforeJunctions = trackKey === 'track1' ? snapshotValidJunctions() : [];
     let pushedUndo = false;
 
     const onMove = (moveEvent) => {
       const dx = moveEvent.clientX - startX;
       if (Math.abs(dx) < 3 && !pushedUndo) return;
       if (!pushedUndo) {
+        closeTransitionPopover();
         pushUndoState();
         pushedUndo = true;
       }
@@ -1526,6 +2065,9 @@
       window.removeEventListener('mouseup', onUp);
       showSnapGuide(null);
       if (pushedUndo) {
+        if (trackKey === 'track1') {
+          pruneInvalidTransitionsAndRestoreAudio(beforeJunctions);
+        }
         renderTimelineAndInspector();
         syncAudioPool();
         syncPreviewAtCurrentFrame();
@@ -1541,17 +2083,29 @@
     const src = getSourceById(clip.sourceId);
     const maxSourceFrames = Math.max(2, src?.totalFrames || clip.outFrame);
     const speed = trackKey === 'track1' ? (Number(clip.speed) > 0 ? Number(clip.speed) : 1) : 1;
+    const minAllowedFrames = trackKey === 'track1' ? getClipTransitionInfo(clip.id).minAllowedFrames : 1;
     const startX = downEvent.clientX;
     const origIn = clip.inFrame;
     const origOut = clip.outFrame;
     const origTlStart = clip.timelineStartFrame || 0;
     const origTlDur = getClipDurationFrames(clip, trackKey);
     let pushedUndo = false;
+    let warnedMinTrim = false;
+
+    const minSrcSpanForMinFrames = () => {
+      if (trackKey !== 'track1' || minAllowedFrames <= 1) return 1;
+      let s = Math.max(1, Math.ceil(minAllowedFrames * speed));
+      while (s > 1 && Math.floor((s - 1) / speed) >= minAllowedFrames) s -= 1;
+      while (Math.floor(s / speed) < minAllowedFrames) s += 1;
+      return s;
+    };
+    const minSrcSpan = minSrcSpanForMinFrames();
 
     const onMove = (moveEvent) => {
       const dx = moveEvent.clientX - startX;
       if (Math.abs(dx) < 2 && !pushedUndo) return;
       if (!pushedUndo) {
+        closeTransitionPopover();
         pushUndoState();
         pushedUndo = true;
       }
@@ -1560,19 +2114,33 @@
 
       if (trackKey === 'track1') {
         const deltaSrc = Math.round(rawDeltaTimelineFrames * speed);
+        let nextIn = clip.inFrame;
+        let nextOut = clip.outFrame;
         if (side === 'left') {
           if (clip.reversed) {
-            clip.outFrame = Math.max(clip.inFrame + 1, Math.min(maxSourceFrames, origOut - deltaSrc));
+            nextOut = Math.min(maxSourceFrames, Math.max(clip.inFrame + minSrcSpan, origOut - deltaSrc));
           } else {
-            clip.inFrame = Math.max(0, Math.min(clip.outFrame - 1, origIn + deltaSrc));
+            nextIn = Math.max(0, Math.min(clip.outFrame - minSrcSpan, origIn + deltaSrc));
           }
         } else {
           if (clip.reversed) {
-            clip.inFrame = Math.max(0, Math.min(clip.outFrame - 1, origIn - deltaSrc));
+            nextIn = Math.max(0, Math.min(clip.outFrame - minSrcSpan, origIn - deltaSrc));
           } else {
-            clip.outFrame = Math.max(clip.inFrame + 1, Math.min(maxSourceFrames, origOut + deltaSrc));
+            nextOut = Math.min(maxSourceFrames, Math.max(clip.inFrame + minSrcSpan, origOut + deltaSrc));
           }
         }
+        const hitMinClamp =
+          minAllowedFrames > 1 &&
+          nextOut - nextIn === minSrcSpan &&
+          Math.floor((origOut - origIn) / speed) >= minAllowedFrames &&
+          ((side === 'left' && ((clip.reversed && origOut - deltaSrc < clip.inFrame + minSrcSpan) || (!clip.reversed && origIn + deltaSrc > clip.outFrame - minSrcSpan))) ||
+           (side === 'right' && ((clip.reversed && origIn - deltaSrc > clip.outFrame - minSrcSpan) || (!clip.reversed && origOut + deltaSrc < clip.inFrame + minSrcSpan))));
+        if (hitMinClamp && !warnedMinTrim) {
+          warnedMinTrim = true;
+          showToast(`Trim limited: attached transition requires at least ${minAllowedFrames} frames.`, 'warn');
+        }
+        clip.inFrame = nextIn;
+        clip.outFrame = nextOut;
         repackTrack1();
       } else {
         // Free audio track: left edge trims inFrame + shifts timelineStartFrame; right edge trims outFrame
@@ -1603,7 +2171,21 @@
       if (pushedUndo) {
         if (trackKey === 'track1') {
           const newTlDur = getClipDurationFrames(clip, 'track1');
-          shiftAudioFromSegmentStart(origTlStart, newTlDur - origTlDur);
+          const deltaDur = newTlDur - origTlDur;
+          if (deltaDur < 0) {
+            const removed = -deltaDur;
+            if (side === 'left') {
+              applyAudioCutRipple(origTlStart, origTlStart + removed);
+            } else {
+              applyAudioCutRipple(origTlStart + newTlDur, origTlStart + origTlDur);
+            }
+          } else if (deltaDur > 0) {
+            if (side === 'left') {
+              shiftAudioFromSegmentStart(origTlStart, deltaDur);
+            } else {
+              shiftAudioFromSegmentStart(origTlStart + origTlDur, deltaDur);
+            }
+          }
         }
         renderTimelineAndInspector();
         syncAudioPool();
@@ -1641,10 +2223,26 @@
     if (trackKey === 'track1') {
       el.videoInspectorGroup.classList.remove('hidden');
       const sp = Number(clip.speed) || 1;
+      const span = Math.max(1, (clip.outFrame || 0) - (clip.inFrame || 0));
+      const { minAllowedFrames } = getClipTransitionInfo(clip.id);
+      const maxValidSpeed = span / minAllowedFrames;
+
+      Array.from(el.speedPresetSelect.options).forEach((o) => {
+        if (o.value === 'custom') {
+          o.disabled = false;
+        } else {
+          const optSpeed = Number(o.value);
+          o.disabled = Math.max(1, Math.floor(span / optSpeed)) < minAllowedFrames;
+        }
+      });
+
+      const steppedMax = Math.max(0.25, Math.min(4.0, Math.floor((maxValidSpeed + 1e-6) * 20) / 20));
+      el.speedFineInput.max = steppedMax.toFixed(2);
       el.speedFineInput.value = sp.toFixed(2);
       const presetOpt = Array.from(el.speedPresetSelect.options).find((o) => Number(o.value) === sp);
       el.speedPresetSelect.value = presetOpt ? presetOpt.value : 'custom';
       el.reverseToggleBtn.classList.toggle('active', Boolean(clip.reversed));
+      el.mirrorToggleBtn.classList.toggle('active', Boolean(clip.mirrored));
 
       // Hide audio controls cleanly for silent Google Flow video clips
       if (source && source.hasAudio) {
@@ -1724,6 +2322,19 @@
     }
   }
 
+  function clearBlendAndOverlay() {
+    el.videoPlayerA.classList.remove('blending');
+    el.videoPlayerB.classList.remove('blending');
+    if (el.previewTransitionOverlay) {
+      el.previewTransitionOverlay.style.opacity = '0';
+    }
+  }
+
+  function applyVideoSlotMirror(slot, clip) {
+    const player = slot === 'A' ? el.videoPlayerA : el.videoPlayerB;
+    player.style.transform = clip && clip.mirrored ? 'scaleX(-1)' : '';
+  }
+
   function releaseAllMediaBuffers() {
     for (const entry of state.audioNodePool.values()) {
       releaseClipAudioNode(entry);
@@ -1734,7 +2345,12 @@
       player.pause();
       player.removeAttribute('src');
       player.load();
+      player.style.transform = '';
+      player.classList.remove('blending');
       state.slotState[slot] = { clipId: null, sourceId: null, preseekedSec: null, pendingSeekSec: null };
+    }
+    if (el.previewTransitionOverlay) {
+      el.previewTransitionOverlay.style.opacity = '0';
     }
   }
 
@@ -1816,10 +2432,11 @@
     const player = slot === 'A' ? el.videoPlayerA : el.videoPlayerB;
     const st = state.slotState[slot];
     if (!clip || !state.project) {
-      if (st.sourceId !== null) {
+      if (st.sourceId !== null || st.clipId !== null) {
         player.pause();
         player.removeAttribute('src');
         player.load();
+        player.style.transform = '';
         state.slotState[slot] = { clipId: null, sourceId: null, preseekedSec: null, pendingSeekSec: null };
       }
       return player;
@@ -1835,8 +2452,11 @@
       st.sourceId = src.id;
       st.preseekedSec = null;
       st.pendingSeekSec = null;
+    } else if (st.clipId !== clip.id) {
+      st.preseekedSec = null;
     }
     st.clipId = clip.id;
+    applyVideoSlotMirror(slot, clip);
     return player;
   }
 
@@ -1859,12 +2479,94 @@
     el.videoPlayerB.classList.toggle('active', nextSlot === 'B');
   }
 
+  function getSourceSecForClipFrame(clip, timelineFrame) {
+    const speed = Number(clip.speed) > 0 ? Number(clip.speed) : 1;
+    const startFrame = clip.timelineStartFrame || 0;
+    const durFrames = getClipDurationFrames(clip, 'track1');
+    const offsetFrames = Math.max(0, Math.min(durFrames - 1, timelineFrame - startFrame));
+    const elapsedInClip = offsetFrames / FPS;
+    return clip.reversed
+      ? Math.max(clip.inFrame / FPS, clip.outFrame / FPS - elapsedInClip * speed)
+      : Math.min(clip.outFrame / FPS, clip.inFrame / FPS + elapsedInClip * speed);
+  }
+
+  function getActiveTransformAtFrame(frame) {
+    if (!state.project) return null;
+    const t1 = state.project.tracks?.track1 || [];
+    for (let i = 0; i < t1.length - 1; i += 1) {
+      const clipA = t1[i];
+      const clipB = t1[i + 1];
+      const t = getAdjacentTransition(clipA.id, clipB.id);
+      if (t && t.type === 'transform') {
+        const blendFrame = clipB.timelineStartFrame || 0;
+        if (frame === blendFrame) {
+          return { clipA, clipB, blendFrame };
+        }
+      }
+    }
+    return null;
+  }
+
+  function getActiveFadeOverlayAtFrame(frame) {
+    if (!state.project) return null;
+    const t1 = state.project.tracks?.track1 || [];
+    for (let i = 0; i < t1.length - 1; i += 1) {
+      const clipA = t1[i];
+      const clipB = t1[i + 1];
+      const t = getAdjacentTransition(clipA.id, clipB.id);
+      if (t && (t.type === 'fade_black' || t.type === 'fade_white')) {
+        const centerFrame = (clipA.timelineStartFrame || 0) + getClipDurationFrames(clipA, 'track1');
+        const ramp = Math.max(1, Math.round(Number(t.rampFrames) || 1));
+        const dist = Math.abs(frame - centerFrame);
+        if (dist <= ramp) {
+          const opacity = dist === 0 ? 1 : (ramp + 1 - dist) / (ramp + 1);
+          return {
+            color: t.type === 'fade_white' ? '#FFFFFF' : '#000000',
+            opacity,
+            isCenter: dist === 0,
+            clipA,
+            clipB,
+          };
+        }
+      }
+    }
+    return null;
+  }
+
+  function applyFadeOverlay(fadeInfo) {
+    if (!el.previewTransitionOverlay) return;
+    if (!fadeInfo) {
+      el.previewTransitionOverlay.style.opacity = '0';
+      return;
+    }
+    el.previewTransitionOverlay.style.background = fadeInfo.color;
+    el.previewTransitionOverlay.style.opacity = String(fadeInfo.opacity);
+  }
+
+  function getSlotPairForTransform(clipA) {
+    const other = state.activeVideoSlot === 'A' ? 'B' : 'A';
+    if (state.slotState[state.activeVideoSlot].clipId === clipA.id) {
+      return { slotA: state.activeVideoSlot, slotB: other };
+    }
+    if (state.slotState[other].clipId === clipA.id) {
+      swapActiveVideoSlot(other);
+      return { slotA: other, slotB: state.activeVideoSlot === 'A' ? 'B' : 'A' };
+    }
+    return { slotA: state.activeVideoSlot, slotB: other };
+  }
+
+  function formatClipBadgeText(clip, src) {
+    const speed = Number(clip.speed) > 0 ? Number(clip.speed) : 1;
+    return `${src.name} • ${speed}x${clip.reversed ? ' • REV' : ''}${clip.mirrored ? ' • MIR' : ''}`;
+  }
+
   function syncPreviewAtCurrentFrame() {
     if (!state.project) return;
     const t1 = state.project.tracks.track1 || [];
     el.previewEmptyOverlay.classList.toggle('hidden', t1.length > 0);
     if (t1.length === 0) {
       el.previewClipBadge.classList.add('hidden');
+      clearBlendAndOverlay();
       setVideoSlotSource('A', null);
       setVideoSlotSource('B', null);
       return;
@@ -1872,24 +2574,71 @@
 
     const totalT1 = getTotalTrack1Frames();
     const clampedFrame = Math.max(0, Math.min(Math.max(0, totalT1 - 1), state.playheadFrame));
-    const timelineSec = clampedFrame / FPS;
-    const { active } = getTrack1ClipAtTime(timelineSec);
+    const fadeInfo = getActiveFadeOverlayAtFrame(clampedFrame);
+    applyFadeOverlay(fadeInfo);
+
+    const transInfo = getActiveTransformAtFrame(clampedFrame);
+    if (transInfo) {
+      const { clipA, clipB } = transInfo;
+      const srcA = getSourceById(clipA.sourceId);
+      const srcB = getSourceById(clipB.sourceId);
+      const { slotA, slotB } = getSlotPairForTransform(clipA);
+      const playerA = setVideoSlotSource(slotA, clipA);
+      const playerB = setVideoSlotSource(slotB, clipB);
+
+      playerA.classList.add('active');
+      playerA.classList.remove('blending');
+      playerB.classList.remove('active');
+      playerB.classList.add('blending');
+
+      playerA.pause();
+      playerB.pause();
+      seekVideoSlot(slotA, getSourceSecForClipFrame(clipA, clampedFrame));
+      seekVideoSlot(slotB, getSourceSecForClipFrame(clipB, clampedFrame));
+
+      el.previewClipBadge.textContent = `${srcA?.name || 'Clip A'} ⟷ ${srcB?.name || 'Clip B'} • 50/50 Transform`;
+      el.previewClipBadge.classList.remove('hidden');
+      return;
+    }
+
+    el.videoPlayerA.classList.remove('blending');
+    el.videoPlayerB.classList.remove('blending');
+
+    if (fadeInfo && fadeInfo.isCenter) {
+      const playerA = setVideoSlotSource(state.activeVideoSlot, fadeInfo.clipA);
+      playerA.pause();
+      const nextSlot = state.activeVideoSlot === 'A' ? 'B' : 'A';
+      const nextPlayer = setVideoSlotSource(nextSlot, fadeInfo.clipB);
+      nextPlayer.pause();
+      seekVideoSlot(nextSlot, fadeInfo.clipB.reversed ? fadeInfo.clipB.outFrame / FPS : fadeInfo.clipB.inFrame / FPS);
+      el.previewClipBadge.textContent = fadeInfo.color === '#FFFFFF' ? 'Fade White (Center)' : 'Fade Black (Center)';
+      el.previewClipBadge.classList.remove('hidden');
+      return;
+    }
+
+    const timelineSec = (clampedFrame + 0.01) / FPS;
+    const { active, next } = getTrack1ClipAtTime(timelineSec);
     if (!active) return;
 
-    const { clip, startSec } = active;
+    const { clip } = active;
     const src = getSourceById(clip.sourceId);
     if (!src || src.missing) return;
 
-    const speed = Number(clip.speed) > 0 ? Number(clip.speed) : 1;
-    const elapsedInClip = Math.max(0, timelineSec - startSec);
-    const targetSrcSec = clip.reversed
-      ? Math.max(clip.inFrame / FPS, clip.outFrame / FPS - elapsedInClip * speed)
-      : Math.min(clip.outFrame / FPS, clip.inFrame / FPS + elapsedInClip * speed);
-
-    const player = setVideoSlotSource(state.activeVideoSlot, clip);
+    const activeSlot = state.activeVideoSlot;
+    const player = setVideoSlotSource(activeSlot, clip);
     player.pause();
-    seekVideoSlot(state.activeVideoSlot, targetSrcSec);
-    el.previewClipBadge.textContent = `${src.name} • ${speed}x${clip.reversed ? ' • REV' : ''}`;
+    seekVideoSlot(activeSlot, getSourceSecForClipFrame(clip, clampedFrame));
+
+    const inactiveSlot = activeSlot === 'A' ? 'B' : 'A';
+    if (next && next.clip) {
+      const nextPlayer = setVideoSlotSource(inactiveSlot, next.clip);
+      nextPlayer.pause();
+      const nextStartSrc = next.clip.reversed ? next.clip.outFrame / FPS : next.clip.inFrame / FPS;
+      seekVideoSlot(inactiveSlot, nextStartSrc);
+      state.slotState[inactiveSlot].preseekedSec = nextStartSrc;
+    }
+
+    el.previewClipBadge.textContent = formatClipBadgeText(clip, src);
     el.previewClipBadge.classList.remove('hidden');
   }
 
@@ -1903,88 +2652,166 @@
 
     if (totalT1Frames === 0 || timelineSec >= totalT1Sec) {
       state.playheadFrame = Math.max(0, totalT1Frames);
+      clearBlendAndOverlay();
       updatePlayheadUI();
       stopPlayback();
       return;
     }
 
-    state.playheadFrame = Math.floor(timelineSec * FPS);
+    const frame = Math.min(Math.max(0, totalT1Frames - 1), Math.floor(timelineSec * FPS));
+    state.playheadFrame = frame;
     updatePlayheadUI();
 
-    // 1. Track 1 Dual-Player Gap-Free Video Sync
-    const { active, next } = getTrack1ClipAtTime(timelineSec);
-    if (active) {
-      const { clip, startSec } = active;
-      const src = getSourceById(clip.sourceId);
-      const inactiveSlot = state.activeVideoSlot === 'A' ? 'B' : 'A';
+    const fadeInfo = getActiveFadeOverlayAtFrame(frame);
+    applyFadeOverlay(fadeInfo);
 
-      // Switch to preloaded inactive slot if it already holds this clip
-      if (state.slotState[state.activeVideoSlot].clipId !== clip.id) {
-        if (state.slotState[inactiveSlot].clipId === clip.id) {
-          const oldPlayer = state.activeVideoSlot === 'A' ? el.videoPlayerA : el.videoPlayerB;
-          oldPlayer.pause();
-          swapActiveVideoSlot(inactiveSlot);
-        }
+    const transInfo = getActiveTransformAtFrame(frame);
+
+    // 1. Track 1 Dual-Player Gap-Free Video Sync & Transitions
+    if (transInfo) {
+      // Transform 1-frame 50/50 blend: render A (opacity: 1) + B (opacity: 0.5) simultaneously
+      const { clipA, clipB } = transInfo;
+      const srcA = getSourceById(clipA.sourceId);
+      const srcB = getSourceById(clipB.sourceId);
+      const { slotA, slotB } = getSlotPairForTransform(clipA);
+      const playerA = setVideoSlotSource(slotA, clipA);
+      const playerB = setVideoSlotSource(slotB, clipB);
+
+      playerA.classList.add('active');
+      playerA.classList.remove('blending');
+      playerB.classList.remove('active');
+      playerB.classList.add('blending');
+
+      const entrySecB = clipB.reversed ? clipB.outFrame / FPS : clipB.inFrame / FPS;
+      if (!playerB.paused) playerB.pause();
+      playerB.muted = true;
+      if (!playerB.seeking && Math.abs(playerB.currentTime - entrySecB) > 0.01) {
+        playerB.currentTime = entrySecB;
       }
 
-      const activePlayer = setVideoSlotSource(state.activeVideoSlot, clip);
-      const activeGain = state.activeVideoSlot === 'A' ? state.videoGainA : state.videoGainB;
-      const inactiveGain = state.activeVideoSlot === 'A' ? state.videoGainB : state.videoGainA;
-      if (inactiveGain) inactiveGain.gain.setTargetAtTime(0, state.audioCtx.currentTime, 0.008);
-
-      const speed = Number(clip.speed) > 0 ? Number(clip.speed) : 1;
-      const elapsedInClip = Math.max(0, timelineSec - startSec);
-      const durSec = getClipDurationFrames(clip, 'track1') / FPS;
-
-      if (clip.reversed) {
-        if (!activePlayer.paused) activePlayer.pause();
-        activePlayer.muted = true;
-        if (activeGain) activeGain.gain.setTargetAtTime(0, state.audioCtx.currentTime, 0.01);
-        const targetSrcSec = Math.max(clip.inFrame / FPS, clip.outFrame / FPS - elapsedInClip * speed);
-        if (!activePlayer.seeking && Math.abs(activePlayer.currentTime - targetSrcSec) >= 0.5 / FPS) {
-          activePlayer.currentTime = targetSrcSec;
+      const speedA = Number(clipA.speed) > 0 ? Number(clipA.speed) : 1;
+      const targetSecA = getSourceSecForClipFrame(clipA, frame);
+      if (clipA.reversed) {
+        if (!playerA.paused) playerA.pause();
+        if (!playerA.seeking && Math.abs(playerA.currentTime - targetSecA) >= 0.5 / FPS) {
+          playerA.currentTime = targetSecA;
         }
       } else {
-        const hasAudio = Boolean(src && src.hasAudio);
-        activePlayer.muted = !hasAudio;
-        if (activeGain) {
-          const g = hasAudio ? computeEnvelopeGain(clip, elapsedInClip, durSec) : 0;
-          activeGain.gain.setTargetAtTime(g, state.audioCtx.currentTime, 0.015);
-        }
-        activePlayer.playbackRate = speed;
-        activePlayer.preservesPitch = true;
-
-        const targetSrcSec = Math.min(clip.outFrame / FPS, clip.inFrame / FPS + elapsedInClip * speed);
-        if (activePlayer.paused && activePlayer.readyState >= 2) {
-          activePlayer.play().catch(() => {});
-        }
-        if (!activePlayer.seeking && Math.abs(activePlayer.currentTime - targetSrcSec) > 1 / FPS) {
-          activePlayer.currentTime = targetSrcSec;
+        playerA.playbackRate = speedA;
+        if (playerA.paused && playerA.readyState >= 2) {
+          playerA.play().catch(() => {});
         }
       }
 
-      // Preload next Track 1 clip into inactive player
+      const gainA = slotA === 'A' ? state.videoGainA : state.videoGainB;
+      const gainB = slotB === 'A' ? state.videoGainA : state.videoGainB;
+      if (gainB) gainB.gain.setTargetAtTime(0, state.audioCtx.currentTime, 0.008);
+      if (gainA && (!srcA || !srcA.hasAudio || clipA.reversed)) {
+        gainA.gain.setTargetAtTime(0, state.audioCtx.currentTime, 0.01);
+      }
+
+      el.previewClipBadge.textContent = `${srcA?.name || 'Clip A'} ⟷ ${srcB?.name || 'Clip B'} • 50/50 Transform`;
+      el.previewClipBadge.classList.remove('hidden');
+    } else if (fadeInfo && fadeInfo.isCenter) {
+      el.videoPlayerA.classList.remove('blending');
+      el.videoPlayerB.classList.remove('blending');
+      if (state.videoGainA) state.videoGainA.gain.setTargetAtTime(0, state.audioCtx.currentTime, 0.008);
+      if (state.videoGainB) state.videoGainB.gain.setTargetAtTime(0, state.audioCtx.currentTime, 0.008);
+      el.videoPlayerA.pause();
+      el.videoPlayerB.pause();
+
+      // Keep incoming clip pre-parked and paused for next frame
       const nextSlot = state.activeVideoSlot === 'A' ? 'B' : 'A';
-      if (next && next.clip) {
-        const nextPlayer = setVideoSlotSource(nextSlot, next.clip);
-        nextPlayer.pause();
-        nextPlayer.muted = true;
-        const nextStartSrc = next.clip.reversed ? next.clip.outFrame / FPS : next.clip.inFrame / FPS;
-        if (
-          state.slotState[nextSlot].preseekedSec !== nextStartSrc &&
-          !nextPlayer.seeking &&
-          nextPlayer.readyState >= 1
-        ) {
-          nextPlayer.currentTime = nextStartSrc;
-          state.slotState[nextSlot].preseekedSec = nextStartSrc;
-        }
-      } else {
-        setVideoSlotSource(nextSlot, null);
+      const nextPlayer = setVideoSlotSource(nextSlot, fadeInfo.clipB);
+      nextPlayer.pause();
+      const nextStartSrc = fadeInfo.clipB.reversed ? fadeInfo.clipB.outFrame / FPS : fadeInfo.clipB.inFrame / FPS;
+      if (!nextPlayer.seeking && nextPlayer.readyState >= 1 && Math.abs(nextPlayer.currentTime - nextStartSrc) > 0.01) {
+        nextPlayer.currentTime = nextStartSrc;
+        state.slotState[nextSlot].preseekedSec = nextStartSrc;
       }
 
-      if (src) {
-        el.previewClipBadge.textContent = `${src.name} • ${speed}x${clip.reversed ? ' • REV' : ''}`;
-        el.previewClipBadge.classList.remove('hidden');
+      el.previewClipBadge.textContent = fadeInfo.color === '#FFFFFF' ? 'Fade White (Center)' : 'Fade Black (Center)';
+      el.previewClipBadge.classList.remove('hidden');
+    } else {
+      el.videoPlayerA.classList.remove('blending');
+      el.videoPlayerB.classList.remove('blending');
+
+      const { active, next } = getTrack1ClipAtTime(timelineSec);
+      if (active) {
+        const { clip, startSec, endSec } = active;
+        const src = getSourceById(clip.sourceId);
+        const inactiveSlot = state.activeVideoSlot === 'A' ? 'B' : 'A';
+
+        // Switch to preloaded inactive slot once transition/cut passes onto Clip B
+        if (state.slotState[state.activeVideoSlot].clipId !== clip.id) {
+          if (state.slotState[inactiveSlot].clipId === clip.id) {
+            const oldPlayer = state.activeVideoSlot === 'A' ? el.videoPlayerA : el.videoPlayerB;
+            oldPlayer.pause();
+            swapActiveVideoSlot(inactiveSlot);
+          }
+        }
+
+        const activePlayer = setVideoSlotSource(state.activeVideoSlot, clip);
+        const activeGain = state.activeVideoSlot === 'A' ? state.videoGainA : state.videoGainB;
+        const inactiveGain = state.activeVideoSlot === 'A' ? state.videoGainB : state.videoGainA;
+        if (inactiveGain) inactiveGain.gain.setTargetAtTime(0, state.audioCtx.currentTime, 0.008);
+
+        const speed = Number(clip.speed) > 0 ? Number(clip.speed) : 1;
+        const elapsedInClip = Math.max(0, timelineSec - startSec);
+        const durSec = getClipDurationFrames(clip, 'track1') / FPS;
+
+        if (clip.reversed) {
+          if (!activePlayer.paused) activePlayer.pause();
+          activePlayer.muted = true;
+          if (activeGain) activeGain.gain.setTargetAtTime(0, state.audioCtx.currentTime, 0.01);
+          const targetSrcSec = Math.max(clip.inFrame / FPS, clip.outFrame / FPS - elapsedInClip * speed);
+          if (!activePlayer.seeking && Math.abs(activePlayer.currentTime - targetSrcSec) >= 0.5 / FPS) {
+            activePlayer.currentTime = targetSrcSec;
+          }
+        } else {
+          const hasAudio = Boolean(src && src.hasAudio);
+          activePlayer.muted = !hasAudio;
+          if (activeGain) {
+            const g = hasAudio ? computeEnvelopeGain(clip, elapsedInClip, durSec) : 0;
+            activeGain.gain.setTargetAtTime(g, state.audioCtx.currentTime, 0.015);
+          }
+          activePlayer.playbackRate = speed;
+          activePlayer.preservesPitch = true;
+
+          const targetSrcSec = Math.min(clip.outFrame / FPS, clip.inFrame / FPS + elapsedInClip * speed);
+          if (activePlayer.paused && activePlayer.readyState >= 2) {
+            activePlayer.play().catch(() => {});
+          }
+          if (!activePlayer.seeking && Math.abs(activePlayer.currentTime - targetSrcSec) > 1 / FPS) {
+            activePlayer.currentTime = targetSrcSec;
+          }
+        }
+
+        // Preload and pre-seek next Track 1 clip into inactive player (at least 10-15 frames before junction)
+        const nextSlot = state.activeVideoSlot === 'A' ? 'B' : 'A';
+        const remainingFrames = (endSec - timelineSec) * FPS;
+        if (next && next.clip && remainingFrames <= 24) {
+          const nextPlayer = setVideoSlotSource(nextSlot, next.clip);
+          nextPlayer.pause();
+          nextPlayer.muted = true;
+          const nextStartSrc = next.clip.reversed ? next.clip.outFrame / FPS : next.clip.inFrame / FPS;
+          if (
+            (state.slotState[nextSlot].preseekedSec !== nextStartSrc ||
+              (remainingFrames <= 15 && Math.abs(nextPlayer.currentTime - nextStartSrc) > 0.01)) &&
+            !nextPlayer.seeking &&
+            nextPlayer.readyState >= 1
+          ) {
+            nextPlayer.currentTime = nextStartSrc;
+            state.slotState[nextSlot].preseekedSec = nextStartSrc;
+          }
+        } else if (!next || !next.clip) {
+          setVideoSlotSource(nextSlot, null);
+        }
+
+        if (src) {
+          el.previewClipBadge.textContent = formatClipBadgeText(clip, src);
+          el.previewClipBadge.classList.remove('hidden');
+        }
       }
     }
 
@@ -2408,13 +3235,30 @@
       const sel = getSelectedClipObj();
       if (!sel || sel.trackKey !== 'track1') return;
       const clamped = Math.max(0.25, Math.min(4.0, Number(newSpeed) || 1));
+      const span = Math.max(1, (sel.clip.outFrame || 0) - (sel.clip.inFrame || 0));
+      const candidateDur = Math.max(1, Math.floor(span / clamped));
+      const { minAllowedFrames } = getClipTransitionInfo(sel.clip.id);
+      if (candidateDur < minAllowedFrames) {
+        showToast(
+          `Speed ${clamped.toFixed(2)}x blocked: attached transition requires at least ${minAllowedFrames} frames.`,
+          'warn'
+        );
+        renderInspector();
+        return;
+      }
+
+      closeTransitionPopover();
       pushUndoState();
       const segStart = sel.clip.timelineStartFrame || 0;
       const oldDur = getClipDurationFrames(sel.clip, 'track1');
       sel.clip.speed = Number(clamped.toFixed(3));
       repackTrack1();
       const newDur = getClipDurationFrames(sel.clip, 'track1');
-      shiftAudioFromSegmentStart(segStart, newDur - oldDur);
+      if (newDur < oldDur) {
+        applyAudioCutRipple(segStart + newDur, segStart + oldDur);
+      } else if (newDur > oldDur) {
+        shiftAudioFromSegmentStart(segStart + oldDur, newDur - oldDur);
+      }
       renderTimelineAndInspector();
       syncPreviewAtCurrentFrame();
       scheduleAutoSave();
@@ -2436,6 +3280,43 @@
       syncPreviewAtCurrentFrame();
       scheduleAutoSave();
     };
+
+    el.mirrorToggleBtn.onclick = () => {
+      const sel = getSelectedClipObj();
+      if (!sel || sel.trackKey !== 'track1') return;
+      pushUndoState();
+      sel.clip.mirrored = !sel.clip.mirrored;
+      renderTimelineAndInspector();
+      syncPreviewAtCurrentFrame();
+      scheduleAutoSave();
+    };
+
+    // Junction Transition Popover Wiring
+    el.closeTransitionPopoverBtn.onclick = closeTransitionPopover;
+    Array.from(el.transitionPopover.querySelectorAll('.transition-opt-btn')).forEach((btn) => {
+      btn.onclick = () => applyJunctionTransition(btn.dataset.transitionType);
+    });
+    const applyPopoverRamp = (nextRamp) => {
+      if (!state.transitionPopover || !state.project) return;
+      const t = getAdjacentTransition(state.transitionPopover.fromClipId, state.transitionPopover.toClipId);
+      if (!t || (t.type !== 'fade_black' && t.type !== 'fade_white')) return;
+      applyJunctionTransition(t.type, nextRamp);
+    };
+    el.transitionRampMinusBtn.onclick = () => {
+      applyPopoverRamp(Math.max(1, (Number(el.transitionRampInput.value) || 1) - 1));
+    };
+    el.transitionRampPlusBtn.onclick = () => {
+      applyPopoverRamp((Number(el.transitionRampInput.value) || 1) + 1);
+    };
+    el.transitionRampInput.onchange = () => {
+      applyPopoverRamp(Number(el.transitionRampInput.value) || 1);
+    };
+    document.addEventListener('mousedown', (e) => {
+      if (!state.transitionPopover) return;
+      if (el.transitionPopover.contains(e.target)) return;
+      if (e.target.closest && e.target.closest('.tl-junction-btn')) return;
+      closeTransitionPopover();
+    });
 
     let volumeUndoPending = false;
     el.volumeRange.oninput = () => {
@@ -2506,6 +3387,10 @@
 
     // Global Keyboard Shortcuts
     window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && state.transitionPopover) {
+        closeTransitionPopover();
+        return;
+      }
       const tag = document.activeElement?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.target?.isContentEditable) return;
 

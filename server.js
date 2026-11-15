@@ -147,15 +147,151 @@ function verifyProjectSources(project) {
   return project;
 }
 
-function computeTrack1DurationFrames(track1) {
-  if (!Array.isArray(track1)) return 0;
-  let total = 0;
-  for (const clip of track1) {
+function getPostSpeedDurationFrames(inFrame, outFrame, speed) {
+  const safeSpeed = Number(speed) > 0 ? Number(speed) : 1;
+  const safeIn = Math.max(0, Math.round(inFrame || 0));
+  const safeOut = Math.max(safeIn + 1, Math.round(outFrame || safeIn + 1));
+  const span = Math.max(1, safeOut - safeIn);
+  return Math.max(1, Math.floor(span / safeSpeed));
+}
+
+function getTransitionNetDelta(type) {
+  if (type === 'transform') return -1;
+  if (type === 'fade_black' || type === 'fade_white') return 1;
+  return 0;
+}
+
+function resolveTrack1LayoutAndTransitions(track1, rawTransitions) {
+  const list = Array.isArray(track1) ? track1 : [];
+  const transList = Array.isArray(rawTransitions) ? rawTransitions : [];
+
+  const clips = list.map((clip) => {
     const speed = Number(clip.speed) > 0 ? Number(clip.speed) : 1;
-    const span = Math.max(1, (clip.outFrame || 0) - (clip.inFrame || 0));
-    total += Math.max(1, Math.round(span / speed));
+    const inFrame = Math.max(0, Math.round(clip.inFrame || 0));
+    const outFrame = Math.max(inFrame + 1, Math.round(clip.outFrame || inFrame + 1));
+    const durationFrames = getPostSpeedDurationFrames(inFrame, outFrame, speed);
+    return {
+      ...clip,
+      speed,
+      inFrame,
+      outFrame,
+      reversed: Boolean(clip.reversed),
+      mirrored: Boolean(clip.mirrored),
+      durationFrames,
+      leftTransitionFrames: 0,
+      rightTransitionFrames: 0,
+      timelineStartFrame: 0,
+    };
+  });
+
+  const transMap = new Map();
+  for (const t of transList) {
+    if (!t || typeof t.fromClipId !== 'string' || typeof t.toClipId !== 'string') continue;
+    transMap.set(`${t.fromClipId}::${t.toClipId}`, t);
   }
-  return total;
+
+  // First assign fixed 1-frame footprint for eligible transforms so ramp caps see them
+  const junctionRaw = [];
+  for (let i = 0; i < clips.length - 1; i += 1) {
+    const a = clips[i];
+    const b = clips[i + 1];
+    const candidate = a.id && b.id ? transMap.get(`${a.id}::${b.id}`) : null;
+    if (!candidate) {
+      junctionRaw.push(null);
+      continue;
+    }
+    if (candidate.type === 'transform' && a.durationFrames >= 3 && b.durationFrames >= 3) {
+      junctionRaw.push({ fromClipId: a.id, toClipId: b.id, type: 'transform', rampFrames: 1 });
+      a.rightTransitionFrames = 1;
+      b.leftTransitionFrames = 1;
+    } else if (
+      (candidate.type === 'fade_black' || candidate.type === 'fade_white') &&
+      a.durationFrames >= 7 &&
+      b.durationFrames >= 7
+    ) {
+      junctionRaw.push({
+        fromClipId: a.id,
+        toClipId: b.id,
+        type: candidate.type,
+        rampFrames: Math.max(1, Math.round(Number(candidate.rampFrames) || 1)),
+      });
+    } else {
+      junctionRaw.push(null);
+    }
+  }
+
+  // Second pass: clamp fade rampFrames leaving >= 1 body frame per clip
+  const resolvedTransitions = [];
+  for (let i = 0; i < junctionRaw.length; i += 1) {
+    const t = junctionRaw[i];
+    if (!t) {
+      resolvedTransitions.push(null);
+      continue;
+    }
+    if (t.type === 'transform') {
+      resolvedTransitions.push(t);
+      continue;
+    }
+    const a = clips[i];
+    const b = clips[i + 1];
+    // Reserve at least 1 frame for an unassigned downstream fade on B if needed
+    const bNext = junctionRaw[i + 1];
+    const bReservedRight =
+      bNext && (bNext.type === 'fade_black' || bNext.type === 'fade_white') ? 1 : b.rightTransitionFrames;
+    const maxRamp = Math.min(
+      a.durationFrames - 1 - a.leftTransitionFrames,
+      b.durationFrames - 1 - bReservedRight
+    );
+    if (maxRamp < 1) {
+      resolvedTransitions.push(null);
+      continue;
+    }
+    const ramp = Math.max(1, Math.min(t.rampFrames, maxRamp));
+    a.rightTransitionFrames = ramp;
+    b.leftTransitionFrames = ramp;
+    resolvedTransitions.push({ ...t, rampFrames: ramp });
+  }
+
+  let cursorFrames = 0;
+  for (let i = 0; i < clips.length; i += 1) {
+    clips[i].timelineStartFrame = cursorFrames;
+    cursorFrames += clips[i].durationFrames;
+    if (i < resolvedTransitions.length && resolvedTransitions[i]) {
+      cursorFrames += getTransitionNetDelta(resolvedTransitions[i].type);
+    }
+  }
+
+  return {
+    clips,
+    junctionTransitions: resolvedTransitions,
+    totalFrames: Math.max(0, cursorFrames),
+  };
+}
+
+function normalizeProjectData(project) {
+  if (!project || typeof project !== 'object') return project;
+  if (!project.tracks || typeof project.tracks !== 'object') {
+    project.tracks = { track1: [], track2: [], track3: [] };
+  }
+  project.tracks.track1 = Array.isArray(project.tracks.track1)
+    ? project.tracks.track1.map((c) => ({ ...c, mirrored: Boolean(c.mirrored) }))
+    : [];
+  project.tracks.track2 = Array.isArray(project.tracks.track2) ? project.tracks.track2 : [];
+  project.tracks.track3 = Array.isArray(project.tracks.track3) ? project.tracks.track3 : [];
+  project.transitions = Array.isArray(project.transitions)
+    ? project.transitions.filter(
+        (t) =>
+          t &&
+          typeof t.fromClipId === 'string' &&
+          typeof t.toClipId === 'string' &&
+          ['transform', 'fade_black', 'fade_white'].includes(t.type)
+      )
+    : [];
+  return project;
+}
+
+function computeTrack1DurationFrames(track1, transitions = []) {
+  return resolveTrack1LayoutAndTransitions(track1, transitions).totalFrames;
 }
 
 function makeDefaultProject(id, name) {
@@ -176,6 +312,7 @@ function makeDefaultProject(id, name) {
       track2: [],
       track3: [],
     },
+    transitions: [],
   };
 }
 
@@ -527,7 +664,7 @@ app.get('/api/projects', (_req, res) => {
           (Array.isArray(tracks.track1) ? tracks.track1.length : 0) +
           (Array.isArray(tracks.track2) ? tracks.track2.length : 0) +
           (Array.isArray(tracks.track3) ? tracks.track3.length : 0);
-        const totalFrames = computeTrack1DurationFrames(tracks.track1 || []);
+        const totalFrames = computeTrack1DurationFrames(tracks.track1 || [], project.transitions || []);
         list.push({
           id: project.id || entry.name,
           name: project.name || 'Untitled Project',
@@ -569,6 +706,7 @@ app.get('/api/projects/:id', (req, res) => {
   try {
     const project = readProjectJson(pathsObj);
     if (!project) return res.status(404).json({ error: 'Project not found' });
+    normalizeProjectData(project);
     verifyProjectSources(project);
     res.json({ project });
   } catch (err) {
@@ -584,7 +722,7 @@ app.put('/api/projects/:id', (req, res) => {
     if (!existing) return res.status(404).json({ error: 'Project not found' });
 
     const payload = req.body || {};
-    const updated = {
+    const updated = normalizeProjectData({
       ...existing,
       name: typeof payload.name === 'string' && payload.name.trim() ? payload.name.trim() : existing.name,
       snapEnabled: typeof payload.snapEnabled === 'boolean' ? payload.snapEnabled : existing.snapEnabled,
@@ -595,8 +733,9 @@ app.put('/api/projects/:id', (req, res) => {
         track2: Array.isArray(payload.tracks.track2) ? payload.tracks.track2 : [],
         track3: Array.isArray(payload.tracks.track3) ? payload.tracks.track3 : [],
       } : existing.tracks,
+      transitions: Array.isArray(payload.transitions) ? payload.transitions : (existing.transitions || []),
       updatedAt: new Date().toISOString(),
-    };
+    });
     verifyProjectSources(updated);
     writeProjectJsonAtomic(pathsObj, updated);
     res.json({ project: updated });
@@ -1008,32 +1147,22 @@ function buildExportPipeline(project, pathsObj, options) {
 
   const sourceMap = new Map((project.sources || []).map((s) => [s.id, s]));
 
-  // Compute exact Track 1 clip offsets and total frame count
-  let cursorFrames = 0;
-  const t1Resolved = track1.map((clip) => {
+  // Compute exact Track 1 clip offsets, adjacent transitions, and total frame count
+  const { clips: layoutClips, junctionTransitions, totalFrames: totalTrack1Frames } =
+    resolveTrack1LayoutAndTransitions(track1, project.transitions || []);
+
+  const t1Resolved = layoutClips.map((clip) => {
     const source = sourceMap.get(clip.sourceId);
     if (!source) throw new Error(`Missing source metadata for Track 1 clip (${clip.sourceId})`);
     if (!source.path || !fs.existsSync(source.path)) {
       throw new Error(`Missing source file on disk: ${source.name}`);
     }
-    const speed = Number(clip.speed) > 0 ? Number(clip.speed) : 1;
-    const inFrame = Math.max(0, Math.round(clip.inFrame || 0));
-    const outFrame = Math.max(inFrame + 1, Math.round(clip.outFrame || inFrame + 1));
-    const durationFrames = Math.max(1, Math.round((outFrame - inFrame) / speed));
-    const startFrame = cursorFrames;
-    cursorFrames += durationFrames;
     return {
       ...clip,
       source,
-      speed,
-      inFrame,
-      outFrame,
-      durationFrames,
-      timelineStartFrame: startFrame,
     };
   });
 
-  const totalTrack1Frames = cursorFrames;
   const totalVideoSeconds = totalTrack1Frames / FPS;
 
   // Collect active audio segments from Track 1 (if embedded audio exists) and Tracks 2 & 3
@@ -1146,12 +1275,10 @@ function buildExportPipeline(project, pathsObj, options) {
     return `[${idx}:a]`;
   };
 
-  // Track 1 video filter chains (normalize 24fps BEFORE frame trim)
-  const vSegPads = [];
+  // Track 1 canonical video normalization & junction transitions graph
   t1Resolved.forEach((clip, i) => {
     const idx = inputIndexBySourceId.get(clip.source.id);
     const inPad = nextVideoPad(idx);
-    const outPad = `[vseg_${i}]`;
     const parts = [
       `fps=${FPS}`,
       `trim=start_frame=${clip.inFrame}:end_frame=${clip.outFrame}`,
@@ -1163,17 +1290,111 @@ function buildExportPipeline(project, pathsObj, options) {
     if (Math.abs(clip.speed - 1) > 1e-4) {
       parts.push(`setpts=${(1 / clip.speed).toFixed(6)}*PTS`);
     }
+    if (clip.mirrored) {
+      parts.push('hflip');
+    }
+    const tailPad = clip.speed < 1 ? Math.ceil(1 / clip.speed) + 1 : 1;
     parts.push(
+      `fps=${FPS}`,
       'scale=1920:1080:flags=lanczos:force_original_aspect_ratio=decrease',
       'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black',
       'setsar=1',
-      'format=yuv420p'
+      'format=yuv420p',
+      `tpad=stop_mode=clone:stop=${tailPad}`,
+      `trim=start_frame=0:end_frame=${clip.durationFrames}`,
+      'setpts=PTS-STARTPTS'
     );
-    filterLines.push(`${inPad}${parts.join(',')}${outPad}`);
-    vSegPads.push(outPad);
+
+    const hasLeft = clip.leftTransitionFrames > 0;
+    const hasRight = clip.rightTransitionFrames > 0;
+    const sliceCount = (hasLeft ? 1 : 0) + 1 + (hasRight ? 1 : 0);
+
+    if (sliceCount === 1) {
+      filterLines.push(`${inPad}${parts.join(',')}[v_body_${i}]`);
+      return;
+    }
+
+    const normPad = `[v_norm_${i}]`;
+    filterLines.push(`${inPad}${parts.join(',')}${normPad}`);
+
+    const splitPads = [];
+    if (hasLeft) splitPads.push(`[vsp_l_${i}]`);
+    splitPads.push(`[vsp_b_${i}]`);
+    if (hasRight) splitPads.push(`[vsp_r_${i}]`);
+    filterLines.push(`${normPad}split=${sliceCount}${splitPads.join('')}`);
+
+    const leftEnd = clip.leftTransitionFrames;
+    const rightStart = clip.durationFrames - clip.rightTransitionFrames;
+
+    if (hasLeft) {
+      const inTrans = junctionTransitions[i - 1];
+      if (inTrans && (inTrans.type === 'fade_black' || inTrans.type === 'fade_white')) {
+        const fadeColor = inTrans.type === 'fade_white' ? 'white' : 'black';
+        const ramp = leftEnd;
+        filterLines.push(
+          `[vsp_l_${i}]trim=start_frame=0:end_frame=${ramp},setpts=PTS-STARTPTS,` +
+          `tpad=start=1:start_mode=clone,fade=t=in:start_frame=0:nb_frames=${ramp + 1}:color=${fadeColor},` +
+          `trim=start_frame=1:end_frame=${ramp + 1},setpts=PTS-STARTPTS[v_left_${i}]`
+        );
+      } else {
+        filterLines.push(`[vsp_l_${i}]trim=start_frame=0:end_frame=${leftEnd},setpts=PTS-STARTPTS[v_left_${i}]`);
+      }
+    }
+
+    filterLines.push(
+      `[vsp_b_${i}]trim=start_frame=${leftEnd}:end_frame=${rightStart},setpts=PTS-STARTPTS[v_body_${i}]`
+    );
+
+    if (hasRight) {
+      const outTrans = junctionTransitions[i];
+      if (outTrans && (outTrans.type === 'fade_black' || outTrans.type === 'fade_white')) {
+        const fadeColor = outTrans.type === 'fade_white' ? 'white' : 'black';
+        const ramp = clip.rightTransitionFrames;
+        filterLines.push(
+          `[vsp_r_${i}]trim=start_frame=${rightStart}:end_frame=${clip.durationFrames},setpts=PTS-STARTPTS,` +
+          `tpad=start=1:start_mode=clone,fade=t=out:start_frame=0:nb_frames=${ramp + 1}:color=${fadeColor},` +
+          `trim=start_frame=1:end_frame=${ramp + 1},setpts=PTS-STARTPTS[v_right_${i}]`
+        );
+      } else {
+        filterLines.push(
+          `[vsp_r_${i}]trim=start_frame=${rightStart}:end_frame=${clip.durationFrames},setpts=PTS-STARTPTS[v_right_${i}]`
+        );
+      }
+    }
   });
 
-  filterLines.push(`${vSegPads.join('')}concat=n=${vSegPads.length}:v=1:a=0[vout]`);
+  // Assemble ordered video segments across clips and junctions
+  const vConcatPads = [];
+  for (let i = 0; i < t1Resolved.length; i += 1) {
+    if (i > 0) {
+      const prevTrans = junctionTransitions[i - 1];
+      if (prevTrans && (prevTrans.type === 'fade_black' || prevTrans.type === 'fade_white')) {
+        vConcatPads.push(`[v_left_${i}]`);
+      }
+    }
+    vConcatPads.push(`[v_body_${i}]`);
+    if (i < t1Resolved.length - 1) {
+      const nextTrans = junctionTransitions[i];
+      if (nextTrans && nextTrans.type === 'transform') {
+        filterLines.push(
+          `[v_right_${i}][v_left_${i + 1}]blend=all_expr='(A+B)/2',setpts=PTS-STARTPTS[vtrans_${i}]`
+        );
+        vConcatPads.push(`[vtrans_${i}]`);
+      } else if (nextTrans && (nextTrans.type === 'fade_black' || nextTrans.type === 'fade_white')) {
+        const fadeColor = nextTrans.type === 'fade_white' ? 'white' : 'black';
+        filterLines.push(
+          `color=c=${fadeColor}:s=1920x1080:r=${FPS}:d=0.1,trim=start_frame=0:end_frame=1,setpts=PTS-STARTPTS,setsar=1,format=yuv420p[vcenter_${i}]`
+        );
+        vConcatPads.push(`[v_right_${i}]`, `[vcenter_${i}]`);
+      }
+    }
+  }
+
+  if (vConcatPads.length === 1) {
+    filterLines.push(`${vConcatPads[0]}null[vout]`);
+  } else {
+    filterLines.push(`${vConcatPads.join('')}concat=n=${vConcatPads.length}:v=1:a=0[vout]`);
+  }
 
   // Audio filter chains (48kHz stereo, exact sample trim, fades, adelay, amix + alimiter)
   const aSegPads = [];
