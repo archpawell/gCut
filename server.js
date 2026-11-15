@@ -20,10 +20,34 @@ const MONTAGE_ROOT = path.join(os.homedir(), 'Documents', 'MontageStudio');
 const PROJECTS_ROOT = path.join(MONTAGE_ROOT, 'projects');
 const DOWNLOADS_DIR = path.join(os.homedir(), 'Downloads');
 
+const PUBLIC_DIR = path.join(__dirname, 'public');
+
+function syncAssetToPublic(filename) {
+  try {
+    const rootFile = path.join(__dirname, filename);
+    const pubFile = path.join(PUBLIC_DIR, filename);
+    if (fs.existsSync(rootFile) && !fs.existsSync(pubFile)) {
+      fs.copyFileSync(rootFile, pubFile);
+    } else if (fs.existsSync(pubFile) && !fs.existsSync(rootFile)) {
+      fs.copyFileSync(pubFile, rootFile);
+    }
+  } catch {
+    // Ignore asset sync errors on read-only paths
+  }
+}
+
 fs.mkdirSync(PROJECTS_ROOT, { recursive: true });
+syncAssetToPublic('magnet.png');
 
 app.use(express.json({ limit: '25mb' }));
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(PUBLIC_DIR));
+app.get('/magnet.png', (req, res, next) => {
+  const pubMagnet = path.join(PUBLIC_DIR, 'magnet.png');
+  if (fs.existsSync(pubMagnet)) return res.sendFile(pubMagnet);
+  const rootMagnet = path.join(__dirname, 'magnet.png');
+  if (fs.existsSync(rootMagnet)) return res.sendFile(rootMagnet);
+  return next();
+});
 
 // ---------------------------------------------------------------------------
 // Binary Discovery & Hardware Acceleration Probe
@@ -580,6 +604,136 @@ app.get('/api/system/status', (_req, res) => {
   });
 });
 
+app.get('/api/health', (req, res) => {
+  res.json({
+    ok: true,
+    app: 'gCut',
+    port: Number(process.env.PORT) || (req.socket && req.socket.localPort) || null,
+    ts: Date.now(),
+  });
+});
+
+function runExecFile(cmd, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    execFile(cmd, args, { maxBuffer: 10 * 1024 * 1024, ...options }, (err, stdout, stderr) => {
+      if (err) {
+        const msg = (stderr || stdout || err.message || 'Command failed').trim();
+        reject(new Error(msg));
+        return;
+      }
+      resolve({ stdout: stdout || '', stderr: stderr || '' });
+    });
+  });
+}
+
+app.post('/api/system/update', async (req, res) => {
+  const appDir = __dirname;
+  const repoUrl = 'https://github.com/archpawell/gCut.git';
+  const backupDir = '/tmp/gcut_assets_backup';
+  const essentialAssets = ['LOGO_W.jpg', 'LOGO_B.jpg', 'magnet.png'];
+
+  try {
+    // 1. Back up essential UI image assets outside the repo before resetting/updating
+    fs.mkdirSync(backupDir, { recursive: true });
+    for (const assetName of essentialAssets) {
+      const candidates = [
+        path.join(appDir, 'public', assetName),
+        path.join(appDir, assetName),
+      ];
+      const existing = candidates.find((p) => fs.existsSync(p));
+      if (existing) {
+        fs.copyFileSync(existing, path.join(backupDir, assetName));
+      }
+    }
+
+    // 2. Pull latest from standalone GitHub repository without touching ~/Documents/MontageStudio/
+    const hasGit = fs.existsSync(path.join(appDir, '.git'));
+    if (hasGit) {
+      const updateScript = `
+        set -e
+        cd "$1"
+        if git remote get-url origin >/dev/null 2>&1; then
+          git remote set-url origin "$2"
+        else
+          git remote add origin "$2"
+        fi
+        git fetch origin
+        git reset --hard origin/main
+      `;
+      await runExecFile('/bin/bash', ['-c', updateScript, 'gcut-git-update', appDir, repoUrl], {
+        timeout: 90000,
+      });
+    } else {
+      const cloneScript = `
+        set -e
+        TMP_CLONE="/tmp/gcut_repo_clone_$$"
+        rm -rf "$TMP_CLONE"
+        git clone --branch main "$2" "$TMP_CLONE"
+        cp -a "$TMP_CLONE"/. "$1"/
+        rm -rf "$TMP_CLONE"
+      `;
+      await runExecFile('/bin/bash', ['-c', cloneScript, 'gcut-git-clone', appDir, repoUrl], {
+        timeout: 120000,
+      });
+    }
+
+    // 3. Ensure essential image assets exist in public/ (and root), restoring from backup if missing
+    fs.mkdirSync(PUBLIC_DIR, { recursive: true });
+    for (const assetName of essentialAssets) {
+      const pubAsset = path.join(PUBLIC_DIR, assetName);
+      const rootAsset = path.join(appDir, assetName);
+      const bakAsset = path.join(backupDir, assetName);
+      if (!fs.existsSync(pubAsset)) {
+        if (fs.existsSync(rootAsset)) {
+          fs.copyFileSync(rootAsset, pubAsset);
+        } else if (fs.existsSync(bakAsset)) {
+          fs.copyFileSync(bakAsset, pubAsset);
+        }
+      }
+      if (!fs.existsSync(rootAsset) && fs.existsSync(pubAsset)) {
+        fs.copyFileSync(pubAsset, rootAsset);
+      }
+    }
+
+    // 4. Ensure start.command is executable
+    const startCmdPath = path.join(appDir, 'start.command');
+    if (fs.existsSync(startCmdPath)) {
+      fs.chmodSync(startCmdPath, 0o755);
+    }
+
+    const activePort = Number(process.env.PORT) || (req.socket && req.socket.localPort) || 3456;
+    res.json({ ok: true, status: 'restarting', port: activePort });
+
+    // 5. Detached restart script: terminate active server on port and relaunch cleanly
+    const { spawn } = require('child_process');
+    const restartScript = `
+      sleep 0.35
+      PIDS=$(lsof -ti:"$1" 2>/dev/null || true)
+      if [ -n "$PIDS" ]; then
+        echo "$PIDS" | xargs kill -9 2>/dev/null || true
+      fi
+      for _ in $(seq 1 25); do
+        if ! lsof -iTCP:"$1" -sTCP:LISTEN -t >/dev/null 2>&1; then
+          break
+        fi
+        sleep 0.15
+      done
+      cd "$2"
+      chmod +x ./start.command
+      nohup env GCUT_NO_OPEN=1 PORT="$1" ./start.command >/tmp/gcut_update.log 2>&1 &
+    `;
+    setTimeout(() => {
+      const child = spawn('/bin/bash', ['-c', restartScript, 'gcut-restart', String(activePort), appDir], {
+        detached: true,
+        stdio: 'ignore',
+      });
+      child.unref();
+    }, 100);
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Failed to update from GitHub' });
+  }
+});
+
 app.get('/api/fs/browse', (req, res) => {
   try {
     const requested = typeof req.query.dir === 'string' && req.query.dir.trim()
@@ -897,11 +1051,38 @@ app.post('/api/projects/:id/sources/upload', uploadMiddleware.array('files'), as
     }
 
     const added = [];
+    const skipped = [];
     const errors = [];
+    const existingNames = new Set(
+      (project.sources || []).map((s) => String(s.name || '').toLowerCase())
+    );
+    const activeSourcePaths = new Set(
+      (project.sources || [])
+        .filter((s) => s.path)
+        .map((s) => path.resolve(String(s.path)))
+    );
 
     for (const file of uploadedFiles) {
+      const originalLower = String(file.originalname || '').toLowerCase();
+      if (existingNames.has(originalLower)) {
+        if (
+          file.path &&
+          fs.existsSync(file.path) &&
+          !activeSourcePaths.has(path.resolve(file.path))
+        ) {
+          fs.unlinkSync(file.path);
+        }
+        skipped.push(file.originalname);
+        continue;
+      }
       if (!hasAllowedExtension(file.originalname)) {
-        if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+        if (
+          file.path &&
+          fs.existsSync(file.path) &&
+          !activeSourcePaths.has(path.resolve(file.path))
+        ) {
+          fs.unlinkSync(file.path);
+        }
         errors.push(`Unsupported extension: ${file.originalname}`);
         continue;
       }
@@ -915,15 +1096,23 @@ app.post('/api/projects/:id/sources/upload', uploadMiddleware.array('files'), as
         );
         project.sources.push(sourceObj);
         added.push(sourceObj);
+        existingNames.add(originalLower);
+        if (sourceObj.path) activeSourcePaths.add(path.resolve(String(sourceObj.path)));
       } catch (err) {
-        if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+        if (
+          file.path &&
+          fs.existsSync(file.path) &&
+          !activeSourcePaths.has(path.resolve(file.path))
+        ) {
+          fs.unlinkSync(file.path);
+        }
         errors.push(`Failed to inspect ${file.originalname}: ${err.message}`);
       }
     }
 
     project.updatedAt = new Date().toISOString();
     writeProjectJsonAtomic(pathsObj, project);
-    res.json({ added, errors, sources: project.sources });
+    res.json({ added, skipped, errors, sources: project.sources });
   } catch (err) {
     cleanupUploaded();
     res.status(500).json({ error: err.message });
@@ -949,12 +1138,22 @@ app.post('/api/projects/:id/sources/link', async (req, res) => {
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
     const added = [];
+    const skipped = [];
     const errors = [];
+    const existingNames = new Set(
+      (project.sources || []).map((s) => String(s.name || '').toLowerCase())
+    );
 
     for (const rawPath of filePaths) {
       const resolved = path.resolve(String(rawPath));
+      const baseName = path.basename(resolved);
+      const lowerName = baseName.toLowerCase();
+      if (existingNames.has(lowerName)) {
+        skipped.push(baseName);
+        continue;
+      }
       if (!hasAllowedExtension(resolved)) {
-        errors.push(`Unsupported file type: ${path.basename(resolved)}`);
+        errors.push(`Unsupported file type: ${baseName}`);
         continue;
       }
       if (!fs.existsSync(resolved)) {
@@ -966,19 +1165,20 @@ app.post('/api/projects/:id/sources/link', async (req, res) => {
           pathsObj,
           pathsObj.id,
           resolved,
-          path.basename(resolved),
+          baseName,
           'linked'
         );
         project.sources.push(sourceObj);
         added.push(sourceObj);
+        existingNames.add(lowerName);
       } catch (err) {
-        errors.push(`Failed to inspect ${path.basename(resolved)}: ${err.message}`);
+        errors.push(`Failed to inspect ${baseName}: ${err.message}`);
       }
     }
 
     project.updatedAt = new Date().toISOString();
     writeProjectJsonAtomic(pathsObj, project);
-    res.json({ added, errors, sources: project.sources });
+    res.json({ added, skipped, errors, sources: project.sources });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1031,6 +1231,121 @@ app.post('/api/projects/:id/sources/:sourceId/relink', async (req, res) => {
     project.updatedAt = new Date().toISOString();
     writeProjectJsonAtomic(pathsObj, project);
     res.json({ source: updatedSource, sources: project.sources });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/projects/:id/media/:filename', (req, res) => {
+  const pathsObj = getProjectPaths(req.params.id);
+  if (!pathsObj) return res.status(400).json({ error: 'Invalid project id' });
+
+  try {
+    const project = readProjectJson(pathsObj);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const requestedName = path.basename(decodeURIComponent(String(req.params.filename || '')));
+    const requestedSourceId = req.query.sourceId ? String(req.query.sourceId) : null;
+    if (!requestedName && !requestedSourceId) {
+      return res.status(400).json({ error: 'Filename is required' });
+    }
+
+    const sourcesList = Array.isArray(project.sources) ? project.sources : [];
+    const targetLower = requestedName.toLowerCase();
+    let idx = -1;
+    if (requestedSourceId) {
+      idx = sourcesList.findIndex((s) => s.id === requestedSourceId);
+    }
+    if (idx === -1 && targetLower) {
+      idx = sourcesList.findIndex(
+        (s) => String(s.name || '').toLowerCase() === targetLower
+      );
+    }
+    if (idx === -1) {
+      return res.status(404).json({ error: `Media file not found: ${requestedName}` });
+    }
+
+    const targetSource = sourcesList[idx];
+
+    // Re-verify across all tracks that this source is not referenced on the timeline
+    const usedIds = new Set();
+    const tracks = project.tracks || {};
+    for (const tk of ['track1', 'track2', 'track3']) {
+      const clips = Array.isArray(tracks[tk]) ? tracks[tk] : [];
+      for (const clip of clips) {
+        if (clip && clip.sourceId) usedIds.add(clip.sourceId);
+      }
+    }
+    if (usedIds.has(targetSource.id)) {
+      return res.status(409).json({
+        error: 'Delete clips from timeline before deleting source file.',
+      });
+    }
+
+    // Physically delete media file inside project directories (and cache artifacts)
+    const projectRootResolved = path.resolve(pathsObj.root);
+    const candidateFiles = new Set();
+    if (targetSource.path) {
+      const resolvedSrc = path.resolve(String(targetSource.path));
+      if (
+        resolvedSrc.startsWith(projectRootResolved + path.sep) ||
+        targetSource.origin === 'copied'
+      ) {
+        // Safety guard: never delete external original files if origin is 'linked'
+        if (resolvedSrc.startsWith(projectRootResolved + path.sep)) {
+          candidateFiles.add(resolvedSrc);
+        }
+      }
+    }
+    if (targetSource.name) {
+      candidateFiles.add(path.join(pathsObj.sourcesDir, path.basename(targetSource.name)));
+      candidateFiles.add(path.join(pathsObj.root, 'media', path.basename(targetSource.name)));
+    }
+    if (targetSource.path && targetSource.origin === 'copied') {
+      candidateFiles.add(path.join(pathsObj.sourcesDir, path.basename(String(targetSource.path))));
+    }
+
+    // Only unlink files that aren't still pointed to by another source entry
+    const otherPaths = new Set(
+      sourcesList
+        .filter((s, sIdx) => sIdx !== idx && s.path)
+        .map((s) => path.resolve(String(s.path)))
+    );
+
+    for (const fileToDelete of candidateFiles) {
+      const resolvedDel = path.resolve(fileToDelete);
+      if (
+        resolvedDel.startsWith(projectRootResolved + path.sep) &&
+        !otherPaths.has(resolvedDel) &&
+        fs.existsSync(resolvedDel)
+      ) {
+        try {
+          fs.unlinkSync(resolvedDel);
+        } catch {
+          // Ignore individual unlink failures if already removed
+        }
+      }
+    }
+
+    // Delete cache thumbnails / waveform peaks for this source
+    if (fs.existsSync(pathsObj.cacheDir)) {
+      try {
+        const cacheEntries = fs.readdirSync(pathsObj.cacheDir);
+        for (const entry of cacheEntries) {
+          if (entry.startsWith(targetSource.id)) {
+            const cacheFile = path.join(pathsObj.cacheDir, entry);
+            if (fs.existsSync(cacheFile)) fs.unlinkSync(cacheFile);
+          }
+        }
+      } catch {
+        // Ignore cache cleanup errors
+      }
+    }
+
+    project.sources.splice(idx, 1);
+    project.updatedAt = new Date().toISOString();
+    writeProjectJsonAtomic(pathsObj, project);
+    res.json({ ok: true, deletedId: targetSource.id, sources: project.sources });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -48,13 +48,17 @@
         <span class="material-symbols-rounded">redo</span>
       </button>
       <div class="toolbar-divider"></div>
-      <button id="snapToggleBtn" class="btn btn-toggle active" title="Magnetic Snapping (~8px)">
-        <span class="material-symbols-rounded">magnet</span>
-        <span>Snap</span>
+      <button id="snapToggleBtn" class="btn btn-toggle btn-magsnap active" title="Magnetic Snapping (~8px)">
+        <img id="magSnapIcon" class="magsnap-icon" src="/magnet.png" alt="" width="15" height="15" />
+        <span>MagSnap</span>
       </button>
     </div>
 
     <div class="toolbar-right">
+      <button id="updateAppBtn" class="btn btn-outlined btn-sm update-app-btn" title="Pull latest gCut update from GitHub and restart">
+        <span class="material-symbols-rounded">system_update_alt</span>
+        <span>Update</span>
+      </button>
       <button id="themeToggleBtn" class="icon-btn" title="Toggle Day / Night Mode">
         <span id="themeIcon" class="material-symbols-rounded">light_mode</span>
       </button>
@@ -112,15 +116,27 @@
       <section class="preview-panel">
         <div class="monitor-row">
           <div class="stage-wrapper">
-            <div id="previewStage" class="preview-stage">
-              <video id="videoPlayerA" class="stage-video active" playsinline preload="auto"></video>
-              <video id="videoPlayerB" class="stage-video" playsinline preload="auto"></video>
-              <div id="previewTransitionOverlay" class="preview-transition-overlay"></div>
-              <div id="previewEmptyOverlay" class="preview-empty">
-                <span class="material-symbols-rounded">videocam_off</span>
-                <p>Track 1 is empty — drag a video clip from Sources to Track 1</p>
+            <div id="previewFullscreenContainer" class="preview-fullscreen-container">
+              <div id="previewStage" class="preview-stage">
+                <video id="videoPlayerA" class="stage-video active" playsinline preload="auto"></video>
+                <video id="videoPlayerB" class="stage-video" playsinline preload="auto"></video>
+                <div id="previewTransitionOverlay" class="preview-transition-overlay"></div>
+                <div id="previewEmptyOverlay" class="preview-empty">
+                  <span class="material-symbols-rounded">videocam_off</span>
+                  <p>Track 1 is empty — drag a video clip from Sources to Track 1</p>
+                </div>
+                <div id="previewClipBadge" class="preview-clip-badge hidden"></div>
               </div>
-              <div id="previewClipBadge" class="preview-clip-badge hidden"></div>
+              <div id="fullscreenHud" class="fullscreen-hud hidden">
+                <button id="fsPlayPauseBtn" class="fs-hud-btn" type="button" title="Play / Pause (Space)">
+                  <span id="fsPlayPauseIcon" class="material-symbols-rounded">play_arrow</span>
+                  <span id="fsPlayPauseLabel">Play</span>
+                </button>
+                <button id="fsExitBtn" class="fs-hud-btn" type="button" title="Exit Full Screen (Esc)">
+                  <span class="material-symbols-rounded">fullscreen_exit</span>
+                  <span>Exit Full Screen</span>
+                </button>
+              </div>
             </div>
           </div>
 
@@ -176,6 +192,9 @@
 
           <div class="transport-meta">
             <span class="fps-pill">1920×1080 • 24 fps</span>
+            <button id="fullscreenBtn" class="icon-btn transport-fullscreen-btn" type="button" title="Full Screen 16:9 Preview">
+              <span class="material-symbols-rounded">fullscreen</span>
+            </button>
           </div>
         </div>
       </section>
@@ -517,6 +536,15 @@
         <button type="button" id="transitionRampPlusBtn" class="btn btn-outlined btn-sm" title="+1 frame">+</button>
         <span class="transition-ramp-unit">f</span>
       </div>
+    </div>
+  </div>
+
+  <!-- Update & Restart Blocking Overlay -->
+  <div id="updateOverlay" class="update-overlay hidden">
+    <div class="update-overlay-card">
+      <div class="update-spinner"></div>
+      <h3 id="updateOverlayTitle">Updating gCut and restarting...</h3>
+      <p id="updateOverlaySub">Fetching latest changes from GitHub and waiting for server health check...</p>
     </div>
   </div>
 

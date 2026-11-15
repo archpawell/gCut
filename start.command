@@ -13,7 +13,9 @@ URL="http://localhost:${PORT}"
 
 if lsof -iTCP:"${PORT}" -sTCP:LISTEN -t >/dev/null 2>&1; then
   echo "gCut is already running on ${URL}"
-  open "${URL}"
+  if [ "${GCUT_NO_OPEN:-0}" != "1" ]; then
+    open "${URL}"
+  fi
   exit 0
 fi
 
@@ -31,7 +33,9 @@ fi
 (
   for _ in $(seq 1 40); do
     if curl -s "${URL}/api/system/status" >/dev/null 2>&1; then
-      open "${URL}"
+      if [ "${GCUT_NO_OPEN:-0}" != "1" ]; then
+        open "${URL}"
+      fi
       break
     fi
     sleep 0.25

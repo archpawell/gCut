@@ -60,6 +60,8 @@
     dragSourceId: null,
     exportPollTimer: null,
     transitionPopover: null, // { fromClipId, toClipId }
+    fullscreenActive: false,
+    fullscreenHudTimer: null,
   };
 
   // -------------------------------------------------------------------------
@@ -77,6 +79,8 @@
     undoBtn: document.getElementById('undoBtn'),
     redoBtn: document.getElementById('redoBtn'),
     snapToggleBtn: document.getElementById('snapToggleBtn'),
+    magSnapIcon: document.getElementById('magSnapIcon'),
+    updateAppBtn: document.getElementById('updateAppBtn'),
     themeToggleBtn: document.getElementById('themeToggleBtn'),
     themeIcon: document.getElementById('themeIcon'),
     exportModalBtn: document.getElementById('exportModalBtn'),
@@ -88,12 +92,18 @@
     finderFileInput: document.getElementById('finderFileInput'),
     sourcesList: document.getElementById('sourcesList'),
 
+    previewFullscreenContainer: document.getElementById('previewFullscreenContainer'),
     previewStage: document.getElementById('previewStage'),
     videoPlayerA: document.getElementById('videoPlayerA'),
     videoPlayerB: document.getElementById('videoPlayerB'),
     previewTransitionOverlay: document.getElementById('previewTransitionOverlay'),
     previewEmptyOverlay: document.getElementById('previewEmptyOverlay'),
     previewClipBadge: document.getElementById('previewClipBadge'),
+    fullscreenHud: document.getElementById('fullscreenHud'),
+    fsPlayPauseBtn: document.getElementById('fsPlayPauseBtn'),
+    fsPlayPauseIcon: document.getElementById('fsPlayPauseIcon'),
+    fsPlayPauseLabel: document.getElementById('fsPlayPauseLabel'),
+    fsExitBtn: document.getElementById('fsExitBtn'),
     vuMeterCanvas: document.getElementById('vuMeterCanvas'),
 
     currentTimecode: document.getElementById('currentTimecode'),
@@ -107,6 +117,7 @@
     trimLeftBtn: document.getElementById('trimLeftBtn'),
     splitBtn: document.getElementById('splitBtn'),
     trimRightBtn: document.getElementById('trimRightBtn'),
+    fullscreenBtn: document.getElementById('fullscreenBtn'),
 
     inspectorEmpty: document.getElementById('inspectorEmpty'),
     inspectorControls: document.getElementById('inspectorControls'),
@@ -185,6 +196,9 @@
     transitionRampInput: document.getElementById('transitionRampInput'),
     transitionRampPlusBtn: document.getElementById('transitionRampPlusBtn'),
 
+    updateOverlay: document.getElementById('updateOverlay'),
+    updateOverlayTitle: document.getElementById('updateOverlayTitle'),
+    updateOverlaySub: document.getElementById('updateOverlaySub'),
     toastContainer: document.getElementById('toastContainer'),
   };
 
@@ -627,6 +641,66 @@
     img.src = srcUrl;
   }
 
+  function prepareMagSnapIcon() {
+    if (!el.magSnapIcon) return;
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      try {
+        const size = 64;
+        const canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, size, size);
+        ctx.drawImage(img, 0, 0, size, size);
+        const imgData = ctx.getImageData(0, 0, size, size);
+        const data = imgData.data;
+
+        const cornerAlpha = data[3];
+        if (cornerAlpha >= 20) {
+          // Opaque background: flood-fill 4 corners to clear light background cleanly
+          const cr = data[0];
+          const cg = data[1];
+          const cb = data[2];
+          const visited = new Uint8Array(size * size);
+          const queue = [0, size - 1, (size - 1) * size, size * size - 1];
+          let head = 0;
+          while (head < queue.length) {
+            const p = queue[head++];
+            if (visited[p]) continue;
+            visited[p] = 1;
+            const i = p * 4;
+            const dist = Math.hypot(data[i] - cr, data[i + 1] - cg, data[i + 2] - cb);
+            if (dist < 42) {
+              data[i + 3] = 0;
+              const x = p % size;
+              const y = (p - x) / size;
+              if (x > 0 && !visited[p - 1]) queue.push(p - 1);
+              if (x + 1 < size && !visited[p + 1]) queue.push(p + 1);
+              if (y > 0 && !visited[p - size]) queue.push(p - size);
+              if (y + 1 < size && !visited[p + size]) queue.push(p + size);
+            }
+          }
+        }
+
+        // Normalize all visible foreground artwork to pure black (#000000) so invert(1) works cleanly
+        for (let i = 0; i < data.length; i += 4) {
+          if (data[i + 3] > 0) {
+            data[i] = 0;
+            data[i + 1] = 0;
+            data[i + 2] = 0;
+          }
+        }
+        ctx.putImageData(imgData, 0, 0);
+        el.magSnapIcon.src = canvas.toDataURL('image/png');
+      } catch {
+        // Keep static /magnet.png fallback on error
+      }
+    };
+    img.src = '/magnet.png';
+  }
+
   function applyTheme(theme) {
     const resolved = theme === 'light' ? 'light' : 'dark';
     document.documentElement.dataset.theme = resolved;
@@ -712,6 +786,14 @@
     updateUndoRedoButtons();
   }
 
+  function clearProjectHistory() {
+    if (!state.project) return;
+    const hist = getProjectHistory();
+    hist.undo.length = 0;
+    hist.redo.length = 0;
+    updateUndoRedoButtons();
+  }
+
   function setSaveBadge(status) {
     el.saveStatusBadge.classList.remove('saved', 'saving');
     if (status === 'saving') {
@@ -721,6 +803,30 @@
       el.saveStatusBadge.classList.add('saved');
       el.saveStatusText.textContent = 'Saved';
     }
+  }
+
+  async function flushProjectSaveNow() {
+    if (!state.project) return;
+    if (state.saveTimer) {
+      clearTimeout(state.saveTimer);
+      state.saveTimer = null;
+    }
+    const targetProjectId = state.project.id;
+    setSaveBadge('saving');
+    await apiJson(`/api/projects/${targetProjectId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: state.project.name,
+        snapEnabled: state.project.snapEnabled,
+        rippleSyncAudio: state.project.rippleSyncAudio,
+        sources: state.project.sources,
+        tracks: state.project.tracks,
+        transitions: state.project.transitions || [],
+      }),
+    });
+    state.isDirty = false;
+    setSaveBadge('saved');
   }
 
   function scheduleAutoSave() {
@@ -969,6 +1075,63 @@
     }
   }
 
+  function isSourceUsedOnTimeline(sourceId) {
+    const tracks = state.project?.tracks;
+    if (!tracks || !sourceId) return false;
+    for (const tk of ['track1', 'track2', 'track3']) {
+      const clips = tracks[tk] || [];
+      if (clips.some((c) => c.sourceId === sourceId)) return true;
+    }
+    return false;
+  }
+
+  function filterDuplicateFilesByName(items, getName) {
+    const existingNames = new Set(
+      (state.project?.sources || []).map((s) => String(s.name || '').toLowerCase())
+    );
+    const accepted = [];
+    const skipped = [];
+    for (const item of items) {
+      const name = String(getName(item) || '');
+      const lower = name.toLowerCase();
+      if (existingNames.has(lower)) {
+        skipped.push(name);
+      } else {
+        existingNames.add(lower);
+        accepted.push(item);
+      }
+    }
+    return { accepted, skipped };
+  }
+
+  async function deleteUnusedSource(src, triggerBtn) {
+    if (!state.project || !src) return;
+    if (isSourceUsedOnTimeline(src.id)) {
+      showToast('Delete clips from timeline before deleting source file.', 'warn');
+      renderSourcesList();
+      return;
+    }
+
+    if (triggerBtn) triggerBtn.disabled = true;
+    try {
+      await flushProjectSaveNow();
+      const url = `/api/projects/${state.project.id}/media/${encodeURIComponent(src.name)}?sourceId=${encodeURIComponent(src.id)}`;
+      const data = await apiJson(url, { method: 'DELETE' });
+      state.peaksCache.delete(src.id);
+      state.project.sources = Array.isArray(data.sources)
+        ? data.sources
+        : (state.project.sources || []).filter((s) => s.id !== src.id);
+      clearProjectHistory();
+      state.isDirty = false;
+      setSaveBadge('saved');
+      renderSourcesList();
+      showToast(`Deleted unused media: ${src.name}`, 'success');
+    } catch (err) {
+      if (triggerBtn) triggerBtn.disabled = false;
+      showToast(err.message || 'Failed to delete media file.', 'error');
+    }
+  }
+
   function renderSourcesList() {
     if (!state.project) return;
     const sources = state.project.sources || [];
@@ -981,6 +1144,7 @@
     }
 
     for (const src of sources) {
+      const inUse = isSourceUsedOnTimeline(src.id);
       const card = document.createElement('div');
       card.className = `source-card ${src.missing ? 'is-missing' : ''}`;
       card.draggable = !src.missing;
@@ -1028,6 +1192,14 @@
         <span class="meta-badge">${src.storageType === 'linked' ? 'Linked' : 'Copied'}</span>
       `;
 
+      if (inUse) {
+        const inUseBadge = document.createElement('span');
+        inUseBadge.className = 'meta-badge in-use';
+        inUseBadge.title = 'Referenced by timeline clip(s) — delete clips from timeline to unlock deletion';
+        inUseBadge.textContent = 'In use';
+        badges.appendChild(inUseBadge);
+      }
+
       if (src.missing) {
         const missingBadge = document.createElement('span');
         missingBadge.className = 'meta-badge missing';
@@ -1054,6 +1226,22 @@
         card.appendChild(relinkBtn);
       }
 
+      if (!inUse) {
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'source-delete-btn';
+        delBtn.title = `Delete unused file: ${src.name}`;
+        delBtn.setAttribute('aria-label', `Delete ${src.name}`);
+        delBtn.textContent = 'X';
+        delBtn.draggable = false;
+        delBtn.onmousedown = (ev) => ev.stopPropagation();
+        delBtn.onclick = (ev) => {
+          ev.stopPropagation();
+          deleteUnusedSource(src, delBtn);
+        };
+        card.appendChild(delBtn);
+      }
+
       el.sourcesList.appendChild(card);
     }
   }
@@ -1063,24 +1251,32 @@
     const files = Array.from(fileList || []);
     if (files.length === 0) return;
 
-    if (files.length > MAX_IMPORT_BATCH) {
-      showToast(`Batch limit exceeded: you dropped ${files.length} clips. Maximum is ${MAX_IMPORT_BATCH} clips at once.`, 'error');
+    const { accepted, skipped } = filterDuplicateFilesByName(files, (f) => f.name);
+    if (skipped.length > 0) {
+      for (const name of skipped) {
+        showToast(`Skipped duplicate filename: ${name}`, 'warn');
+      }
+    }
+    if (accepted.length === 0) return;
+
+    if (accepted.length > MAX_IMPORT_BATCH) {
+      showToast(`Batch limit exceeded: you dropped ${accepted.length} clips. Maximum is ${MAX_IMPORT_BATCH} clips at once.`, 'error');
       return;
     }
 
-    const invalid = files.filter((f) => !hasAllowedExtension(f.name));
+    const invalid = accepted.filter((f) => !hasAllowedExtension(f.name));
     if (invalid.length > 0) {
       showToast(`Unsupported extension(s): ${invalid.map((f) => f.name).join(', ')}`, 'error');
       return;
     }
 
     const formData = new FormData();
-    for (const f of files) {
+    for (const f of accepted) {
       formData.append('files', f);
     }
 
     try {
-      showToast(`Inspecting & importing ${files.length} clip(s)...`, 'info');
+      showToast(`Inspecting & importing ${accepted.length} clip(s)...`, 'info');
       const data = await apiJson(`/api/projects/${state.project.id}/sources/upload`, {
         method: 'POST',
         body: formData,
@@ -1088,9 +1284,14 @@
       state.project.sources = data.sources;
       await preloadMissingPeaks();
       renderSourcesList();
+      if (data.skipped?.length) {
+        for (const name of data.skipped) {
+          showToast(`Skipped duplicate filename: ${name}`, 'warn');
+        }
+      }
       if (data.errors?.length) {
         showToast(data.errors.join(' | '), 'warn');
-      } else {
+      } else if (data.added?.length) {
         showToast(`Imported ${data.added.length} clip(s) into project sources/`, 'success');
       }
     } catch (err) {
@@ -1285,7 +1486,7 @@
     const sel = getSelectedClipObj();
     if (!sel) return;
     closeTransitionPopover();
-    pushUndoState();
+    clearProjectHistory();
     const list = state.project.tracks[sel.trackKey];
     const idx = list.findIndex((c) => c.id === sel.clip.id);
     if (idx !== -1) {
@@ -2267,6 +2468,7 @@
     renderAllTimelineClips();
     updatePlayheadUI();
     renderInspector();
+    renderSourcesList();
   }
 
   function syncToolbarToggles() {
@@ -2849,6 +3051,145 @@
     state.rafId = requestAnimationFrame(updateMasterPlaybackLoop);
   }
 
+  function getFullscreenElement() {
+    return document.fullscreenElement || document.webkitFullscreenElement || null;
+  }
+
+  function isPreviewFullscreen() {
+    return Boolean(el.previewFullscreenContainer && getFullscreenElement() === el.previewFullscreenContainer);
+  }
+
+  function updateFullscreenHudPlayIcon() {
+    if (el.fsPlayPauseIcon) {
+      el.fsPlayPauseIcon.textContent = state.isPlaying ? 'pause' : 'play_arrow';
+    }
+    if (el.fsPlayPauseLabel) {
+      el.fsPlayPauseLabel.textContent = state.isPlaying ? 'Pause' : 'Play';
+    }
+  }
+
+  function showFullscreenHudTemporarily() {
+    if (!el.fullscreenHud) return;
+    el.fullscreenHud.classList.remove('hud-idle');
+    if (state.fullscreenHudTimer) {
+      clearTimeout(state.fullscreenHudTimer);
+      state.fullscreenHudTimer = null;
+    }
+    if (state.fullscreenActive && state.isPlaying) {
+      state.fullscreenHudTimer = setTimeout(() => {
+        if (state.fullscreenActive && state.isPlaying && el.fullscreenHud) {
+          el.fullscreenHud.classList.add('hud-idle');
+        }
+      }, 2000);
+    }
+  }
+
+  function syncFullscreenUI() {
+    const active = isPreviewFullscreen();
+    state.fullscreenActive = active;
+    document.body.classList.toggle('is-fullscreen', active);
+    if (el.fullscreenHud) {
+      el.fullscreenHud.classList.toggle('hidden', !active);
+    }
+    updateFullscreenHudPlayIcon();
+    if (active) {
+      showFullscreenHudTemporarily();
+    } else if (state.fullscreenHudTimer) {
+      clearTimeout(state.fullscreenHudTimer);
+      state.fullscreenHudTimer = null;
+      el.fullscreenHud?.classList.remove('hud-idle');
+    }
+  }
+
+  async function enterPreviewFullscreen() {
+    const container = el.previewFullscreenContainer;
+    if (!container) return;
+    try {
+      if (container.requestFullscreen) {
+        await container.requestFullscreen();
+      } else if (container.webkitRequestFullscreen) {
+        container.webkitRequestFullscreen();
+      }
+    } catch (err) {
+      showToast(`Unable to enter full screen: ${err.message}`, 'warn');
+    }
+  }
+
+  async function exitPreviewFullscreen() {
+    if (!getFullscreenElement()) return;
+    try {
+      if (document.exitFullscreen) {
+        await document.exitFullscreen();
+      } else if (document.webkitExitFullscreen) {
+        document.webkitExitFullscreen();
+      }
+    } catch {
+      // Ignore fullscreen exit errors
+    }
+  }
+
+  async function triggerAppUpdate() {
+    if (
+      !window.confirm(
+        'Pull the latest gCut update from GitHub and restart? Current edits will be saved before restarting.'
+      )
+    ) {
+      return;
+    }
+
+    if (el.updateAppBtn) el.updateAppBtn.disabled = true;
+    try {
+      if (state.project) {
+        await flushProjectSaveNow();
+      }
+      if (el.updateOverlayTitle) {
+        el.updateOverlayTitle.textContent = 'Updating gCut and restarting...';
+      }
+      if (el.updateOverlaySub) {
+        el.updateOverlaySub.textContent =
+          'Pulling latest version from GitHub and waiting for server relaunch...';
+      }
+      el.updateOverlay?.classList.remove('hidden');
+
+      await apiJson('/api/system/update', { method: 'POST' });
+
+      // Wait briefly for shutdown, then poll /api/health every 1 second until server returns
+      await new Promise((r) => setTimeout(r, 1000));
+      const deadline = Date.now() + 60000;
+      while (Date.now() < deadline) {
+        try {
+          const res = await fetch('/api/health', { cache: 'no-store' });
+          if (res.ok) {
+            const payload = await res.json().catch(() => null);
+            if (payload && payload.ok) {
+              if (el.updateOverlayTitle) {
+                el.updateOverlayTitle.textContent = 'Update complete! Reloading gCut...';
+              }
+              window.location.reload();
+              return;
+            }
+          }
+        } catch {
+          // Server is restarting; keep polling every 1 second
+        }
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+
+      if (el.updateOverlayTitle) {
+        el.updateOverlayTitle.textContent = 'Server is taking longer than expected...';
+      }
+      if (el.updateOverlaySub) {
+        el.updateOverlaySub.textContent =
+          'Please refresh the page manually or check /tmp/gcut_update.log.';
+      }
+      if (el.updateAppBtn) el.updateAppBtn.disabled = false;
+    } catch (err) {
+      el.updateOverlay?.classList.add('hidden');
+      if (el.updateAppBtn) el.updateAppBtn.disabled = false;
+      showToast(`Update failed: ${err.message}`, 'error');
+    }
+  }
+
   function startPlayback() {
     if (!state.project) return;
     const totalT1 = getTotalTrack1Frames();
@@ -2866,6 +3207,8 @@
 
     state.isPlaying = true;
     el.playPauseIcon.textContent = 'pause';
+    updateFullscreenHudPlayIcon();
+    showFullscreenHudTemporarily();
     state.playStartAudioTime = state.audioCtx.currentTime;
     state.playStartTimelineSec = state.playheadFrame / FPS;
     state.rafId = requestAnimationFrame(updateMasterPlaybackLoop);
@@ -2874,6 +3217,8 @@
   function stopPlayback() {
     state.isPlaying = false;
     el.playPauseIcon.textContent = 'play_arrow';
+    updateFullscreenHudPlayIcon();
+    showFullscreenHudTemporarily();
     if (state.rafId) {
       cancelAnimationFrame(state.rafId);
       state.rafId = null;
@@ -3079,9 +3424,12 @@
 
     // Finder Drag-and-Drop
     el.finderDropZone.onclick = () => el.finderFileInput.click();
-    el.finderFileInput.onchange = (e) => {
-      uploadFinderFiles(e.target.files);
-      el.finderFileInput.value = '';
+    el.finderFileInput.onchange = async (e) => {
+      try {
+        await uploadFinderFiles(e.target.files);
+      } finally {
+        el.finderFileInput.value = '';
+      }
     };
     el.finderDropZone.addEventListener('dragover', (e) => {
       e.preventDefault();
@@ -3142,16 +3490,32 @@
           syncPreviewAtCurrentFrame();
           showToast('Relocated missing file successfully.', 'success');
         } else {
-          const data = await apiJson(`/api/projects/${state.project.id}/sources/link`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ paths: state.fsSelectedPaths }),
-          });
-          state.project.sources = data.sources;
-          await preloadMissingPeaks();
-          renderSourcesList();
-          if (data.errors?.length) showToast(data.errors.join(' | '), 'warn');
-          else showToast(`Linked ${data.added.length} file(s)`, 'success');
+          const { accepted, skipped } = filterDuplicateFilesByName(
+            state.fsSelectedPaths,
+            (p) => String(p).split(/[/\\]/).pop()
+          );
+          if (skipped.length > 0) {
+            for (const name of skipped) {
+              showToast(`Skipped duplicate filename: ${name}`, 'warn');
+            }
+          }
+          if (accepted.length > 0) {
+            const data = await apiJson(`/api/projects/${state.project.id}/sources/link`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ paths: accepted }),
+            });
+            state.project.sources = data.sources;
+            await preloadMissingPeaks();
+            renderSourcesList();
+            if (data.skipped?.length) {
+              for (const name of data.skipped) {
+                showToast(`Skipped duplicate filename: ${name}`, 'warn');
+              }
+            }
+            if (data.errors?.length) showToast(data.errors.join(' | '), 'warn');
+            else if (data.added?.length) showToast(`Linked ${data.added.length} file(s)`, 'success');
+          }
         }
         closeFsBrowser();
       } catch (err) {
@@ -3385,8 +3749,61 @@
     };
     el.startExportBtn.onclick = startExport;
 
+    // GitHub Self-Update
+    if (el.updateAppBtn) {
+      el.updateAppBtn.onclick = triggerAppUpdate;
+    }
+
+    // 16:9 Full-Screen Preview & Floating HUD
+    if (el.fullscreenBtn) {
+      el.fullscreenBtn.onclick = () => {
+        if (isPreviewFullscreen()) exitPreviewFullscreen();
+        else enterPreviewFullscreen();
+      };
+    }
+    if (el.fsPlayPauseBtn) {
+      el.fsPlayPauseBtn.onclick = (e) => {
+        e.stopPropagation();
+        togglePlayback();
+        showFullscreenHudTemporarily();
+      };
+    }
+    if (el.fsExitBtn) {
+      el.fsExitBtn.onclick = (e) => {
+        e.stopPropagation();
+        exitPreviewFullscreen();
+      };
+    }
+    if (el.previewFullscreenContainer) {
+      const wakeHud = () => {
+        if (state.fullscreenActive) showFullscreenHudTemporarily();
+      };
+      el.previewFullscreenContainer.addEventListener('mousemove', wakeHud);
+      el.previewFullscreenContainer.addEventListener('mousedown', wakeHud);
+      el.previewFullscreenContainer.addEventListener('touchstart', wakeHud, { passive: true });
+    }
+    document.addEventListener('fullscreenchange', syncFullscreenUI);
+    document.addEventListener('webkitfullscreenchange', syncFullscreenUI);
+
     // Global Keyboard Shortcuts
     window.addEventListener('keydown', (e) => {
+      if (isPreviewFullscreen() || state.fullscreenActive) {
+        if (e.key === 'Escape') {
+          exitPreviewFullscreen();
+          return;
+        }
+        const tag = document.activeElement?.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.target?.isContentEditable) {
+          return;
+        }
+        if (e.code === 'Space') {
+          e.preventDefault();
+          togglePlayback();
+          showFullscreenHudTemporarily();
+        }
+        return; // Ignore timeline editing hotkeys while in full screen
+      }
+
       if (e.key === 'Escape' && state.transitionPopover) {
         closeTransitionPopover();
         return;
@@ -3434,6 +3851,7 @@
   // -------------------------------------------------------------------------
   async function init() {
     applyTheme(localStorage.getItem('montage_theme') || 'dark');
+    prepareMagSnapIcon();
     drawVuMeter(true);
     wireEvents();
 
