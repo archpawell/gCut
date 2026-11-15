@@ -331,8 +331,94 @@
   }
 
   // -------------------------------------------------------------------------
-  // Theme (Day / Night Mode persisted in localStorage)
+  // Theme (Day / Night Mode persisted in localStorage) & Transparent Favicon
   // -------------------------------------------------------------------------
+  const faviconDataUrlCache = new Map();
+
+  function buildTransparentFaviconDataUrl(img) {
+    const size = 256;
+    const workCanvas = document.createElement('canvas');
+    workCanvas.width = size;
+    workCanvas.height = size;
+    const workCtx = workCanvas.getContext('2d', { willReadFrequently: true });
+    workCtx.drawImage(img, 0, 0, size, size);
+
+    const imgData = workCtx.getImageData(0, 0, size, size);
+    const data = imgData.data;
+
+    const bgR = data[0];
+    const bgG = data[1];
+    const bgB = data[2];
+    const tolerance = 25;
+
+    const visited = new Uint8Array(size * size);
+    const queue = new Int32Array(size * size);
+    let head = 0;
+    let tail = 0;
+
+    const enqueueIfBg = (idx) => {
+      if (visited[idx]) return;
+      const off = idx * 4;
+      const dist = Math.hypot(data[off] - bgR, data[off + 1] - bgG, data[off + 2] - bgB);
+      if (dist < tolerance) {
+        visited[idx] = 1;
+        queue[tail++] = idx;
+      }
+    };
+
+    // Seed all 4 corners to clear connected outer JPEG background only
+    enqueueIfBg(0);
+    enqueueIfBg(size - 1);
+    enqueueIfBg((size - 1) * size);
+    enqueueIfBg(size * size - 1);
+
+    while (head < tail) {
+      const idx = queue[head++];
+      data[idx * 4 + 3] = 0;
+
+      const x = idx % size;
+      const y = (idx - x) / size;
+      if (x > 0) enqueueIfBg(idx - 1);
+      if (x < size - 1) enqueueIfBg(idx + 1);
+      if (y > 0) enqueueIfBg(idx - size);
+      if (y < size - 1) enqueueIfBg(idx + size);
+    }
+
+    workCtx.putImageData(imgData, 0, 0);
+
+    const outCanvas = document.createElement('canvas');
+    outCanvas.width = 64;
+    outCanvas.height = 64;
+    const outCtx = outCanvas.getContext('2d');
+    outCtx.imageSmoothingEnabled = true;
+    outCtx.imageSmoothingQuality = 'high';
+    outCtx.drawImage(workCanvas, 0, 0, 64, 64);
+
+    return outCanvas.toDataURL('image/png');
+  }
+
+  function updateTransparentFavicon(resolvedTheme) {
+    if (!el.appFavicon) return;
+    if (faviconDataUrlCache.has(resolvedTheme)) {
+      el.appFavicon.type = 'image/png';
+      el.appFavicon.href = faviconDataUrlCache.get(resolvedTheme);
+      return;
+    }
+
+    const srcUrl = resolvedTheme === 'light' ? '/LOGO_W.jpg' : '/LOGO_B.jpg';
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      const dataUrl = buildTransparentFaviconDataUrl(img);
+      faviconDataUrlCache.set(resolvedTheme, dataUrl);
+      if (document.documentElement.dataset.theme === resolvedTheme && el.appFavicon) {
+        el.appFavicon.type = 'image/png';
+        el.appFavicon.href = dataUrl;
+      }
+    };
+    img.src = srcUrl;
+  }
+
   function applyTheme(theme) {
     const resolved = theme === 'light' ? 'light' : 'dark';
     document.documentElement.dataset.theme = resolved;
@@ -341,9 +427,7 @@
     if (el.brandLogoImg) {
       el.brandLogoImg.src = resolved === 'light' ? '/LOGO_W.jpg' : '/LOGO_B.jpg';
     }
-    if (el.appFavicon) {
-      el.appFavicon.href = resolved === 'light' ? '/LOGO_W.jpg?theme=light' : '/LOGO_B.jpg?theme=dark';
-    }
+    updateTransparentFavicon(resolved);
     drawTimelineRuler();
     renderAllTimelineClips();
   }

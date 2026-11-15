@@ -1232,9 +1232,9 @@ function buildExportPipeline(project, pathsObj, options) {
 
   const codec = options.codec === 'h265' ? 'h265' : 'h264';
   const quality = ['super', 'high', 'medium', 'low'].includes(options.quality) ? options.quality : 'high';
-  const vtQualityMap = { super: '92', high: '75', medium: '60', low: '45' };
-  const x264CrfMap = { super: '10', high: '18', medium: '23', low: '28' };
-  const x265CrfMap = { super: '10', high: '20', medium: '25', low: '30' };
+  const vtQualityMap = { super: '90', high: '85', medium: '75', low: '65' };
+  const x264CrfMap = { super: '11', high: '14', medium: '18', low: '23' };
+  const x265CrfMap = { super: '11', high: '14', medium: '18', low: '23' };
 
   let videoCodecArgs = [];
   if (codec === 'h265') {
@@ -1246,7 +1246,7 @@ function buildExportPipeline(project, pathsObj, options) {
   } else if (hwSupport.h264_videotoolbox) {
     videoCodecArgs = ['-c:v', 'h264_videotoolbox', '-allow_sw', '1', '-q:v', vtQualityMap[quality]];
   } else {
-    videoCodecArgs = ['-c:v', 'libx264', '-preset', 'medium', '-crf', x264CrfMap[quality]];
+    videoCodecArgs = ['-c:v', 'libx264', '-preset', 'medium', '-crf', x264CrfMap[quality], '-profile:v', 'high', '-level', '4.1'];
   }
 
   const safeBaseName = (options.filename || project.name || 'export')
