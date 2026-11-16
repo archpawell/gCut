@@ -40,7 +40,17 @@ fs.mkdirSync(PROJECTS_ROOT, { recursive: true });
 syncAssetToPublic('magnet.png');
 
 app.use(express.json({ limit: '25mb' }));
-app.use(express.static(PUBLIC_DIR));
+app.use(
+  express.static(PUBLIC_DIR, {
+    etag: false,
+    lastModified: false,
+    setHeaders: (res) => {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+    },
+  })
+);
 app.get('/magnet.png', (req, res, next) => {
   const pubMagnet = path.join(PUBLIC_DIR, 'magnet.png');
   if (fs.existsSync(pubMagnet)) return res.sendFile(pubMagnet);

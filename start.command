@@ -11,12 +11,21 @@ chmod +x "$0" 2>/dev/null || true
 PORT="${PORT:-3456}"
 URL="http://localhost:${PORT}"
 
-if lsof -iTCP:"${PORT}" -sTCP:LISTEN -t >/dev/null 2>&1; then
-  echo "gCut is already running on ${URL}"
-  if [ "${GCUT_NO_OPEN:-0}" != "1" ]; then
-    open "${URL}"
+EXISTING_PIDS="$(lsof -iTCP:"${PORT}" -sTCP:LISTEN -t 2>/dev/null || true)"
+if [ -n "${EXISTING_PIDS}" ]; then
+  echo "Stopping previous gCut instance on port ${PORT} (PID: ${EXISTING_PIDS})..."
+  echo "${EXISTING_PIDS}" | xargs kill -TERM 2>/dev/null || true
+  for _ in $(seq 1 20); do
+    if ! lsof -iTCP:"${PORT}" -sTCP:LISTEN -t >/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.15
+  done
+  STILL_RUNNING="$(lsof -iTCP:"${PORT}" -sTCP:LISTEN -t 2>/dev/null || true)"
+  if [ -n "${STILL_RUNNING}" ]; then
+    echo "${STILL_RUNNING}" | xargs kill -9 2>/dev/null || true
+    sleep 0.2
   fi
-  exit 0
 fi
 
 if ! command -v node >/dev/null 2>&1; then
