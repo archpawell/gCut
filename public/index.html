@@ -11,7 +11,7 @@
     href="https://fonts.googleapis.com/css2?family=Google+Sans+Mono:wght@400;500;600&family=Google+Sans:wght@400;500;600;700&family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap"
     rel="stylesheet"
   />
-  <link rel="stylesheet" href="/styles.css?v=20261116" />
+  <link rel="stylesheet" href="/styles.css?v=20261124" />
 </head>
 <body>
   <!-- Missing FFmpeg Warning Banner -->
@@ -657,6 +657,59 @@
     </div>
   </div>
 
+  <!-- Modal 4: Drop Over Existing Track 1 Clip (Replace / Insert Before / Insert After) -->
+  <div id="dropActionModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="dropActionTitle">
+    <div class="modal-card modal-md">
+      <div class="modal-header">
+        <div class="modal-title-row">
+          <span class="material-symbols-rounded">swap_horiz</span>
+          <h3 id="dropActionTitle">Drop Video on Timeline</h3>
+        </div>
+        <button id="closeDropActionBtn" type="button" class="icon-btn icon-btn-sm" title="Cancel">
+          <span class="material-symbols-rounded">close</span>
+        </button>
+      </div>
+      <div class="modal-body">
+        <p id="dropActionSummary" class="drop-action-summary"></p>
+        <div id="dropActionDurationWarn" class="drop-action-warn hidden">
+          <span class="material-symbols-rounded">warning</span>
+          <span id="dropActionDurationWarnText"></span>
+        </div>
+        <div id="dropActionTransitionNote" class="drop-action-note hidden">
+          <span class="material-symbols-rounded">transition_dissolve</span>
+          <span id="dropActionTransitionNoteText"></span>
+        </div>
+        <div class="drop-action-choices">
+          <button id="dropReplaceBtn" type="button" class="drop-choice-btn primary">
+            <span class="material-symbols-rounded">find_replace</span>
+            <span class="drop-choice-text">
+              <strong>Replace Existing Video</strong>
+              <small id="dropReplaceHint">Uses full untrimmed new video; preserves compatible junction transitions.</small>
+            </span>
+          </button>
+          <button id="dropInsertBeforeBtn" type="button" class="drop-choice-btn">
+            <span class="material-symbols-rounded">arrow_back</span>
+            <span class="drop-choice-text">
+              <strong>Insert Before</strong>
+              <small>Places the new video immediately before the target clip.</small>
+            </span>
+          </button>
+          <button id="dropInsertAfterBtn" type="button" class="drop-choice-btn">
+            <span class="material-symbols-rounded">arrow_forward</span>
+            <span class="drop-choice-text">
+              <strong>Insert After</strong>
+              <small>Places the new video immediately after the target clip.</small>
+            </span>
+          </button>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <span></span>
+        <button id="dropCancelBtn" type="button" class="btn btn-outlined">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Track 1 Junction Transition Popover -->
   <div id="transitionPopover" class="transition-popover hidden" role="dialog" aria-label="Junction Transition">
     <div class="transition-popover-header">
@@ -737,6 +790,6 @@
     </defs>
   </svg>
 
-  <script src="/app.js?v=20261116"></script>
+  <script src="/app.js?v=20261124"></script>
 </body>
 </html>

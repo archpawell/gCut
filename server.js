@@ -480,15 +480,14 @@ function parseFrameRate(rateStr) {
   return parsed > 0 ? Number(parsed.toFixed(3)) : FPS;
 }
 
-function generateThumbnail(filePath, outPath, durationSec) {
+function generateThumbnail(filePath, outPath, _durationSec) {
   return new Promise((resolve) => {
     if (!ffmpegPath) return resolve(false);
-    const seekTime = Math.min(1, Math.max(0, (durationSec || 0) * 0.1));
     const args = [
       '-y',
       '-hide_banner',
       '-loglevel', 'error',
-      '-ss', seekTime.toFixed(3),
+      '-ss', '0',
       '-i', filePath,
       '-frames:v', '1',
       '-vf', 'scale=320:-1',

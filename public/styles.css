@@ -449,6 +449,12 @@ code {
   border-color: var(--accent-blue);
 }
 
+.source-card.previewing {
+  border-color: var(--accent-blue);
+  background: var(--accent-blue-soft);
+  box-shadow: 0 0 0 1px var(--accent-blue);
+}
+
 .source-card.is-missing {
   border-color: var(--accent-red);
   background: var(--accent-red-soft);
@@ -634,6 +640,12 @@ code {
   padding: 3px 8px;
   border-radius: 6px;
   font-variant-numeric: tabular-nums;
+}
+
+.preview-clip-badge.source-mode {
+  background: rgba(26, 115, 232, 0.88);
+  color: #FFFFFF;
+  font-weight: 600;
 }
 
 .vu-panel {
@@ -1049,6 +1061,45 @@ code {
   z-index: 4;
 }
 
+.tl-clip.drop-hover {
+  outline: 2px dashed var(--accent-amber);
+  outline-offset: 1px;
+  z-index: 6;
+}
+
+.tl-clip-thumb {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  width: auto;
+  max-width: none;
+  pointer-events: none;
+  user-select: none;
+  z-index: 0;
+  display: block;
+}
+
+.tl-clip.v1.has-thumb::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.45) 0%,
+    rgba(0, 0, 0, 0.08) 48%,
+    rgba(0, 0, 0, 0.52) 100%
+  );
+  pointer-events: none;
+  z-index: 1;
+}
+
+.tl-clip.v1.has-thumb .tl-clip-title,
+.tl-clip.v1.has-thumb .tl-clip-footer {
+  color: #FFFFFF;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+}
+
 .tl-clip-waveform {
   position: absolute;
   inset: 0;
@@ -1056,6 +1107,7 @@ code {
   height: 100%;
   pointer-events: none;
   opacity: 0.78;
+  z-index: 1;
 }
 
 .tl-clip-header {
@@ -2161,4 +2213,107 @@ body.is-fullscreen .color-grading-panel {
   font-family: "Google Sans Mono", ui-monospace, monospace;
   font-size: 11px;
   color: var(--accent-blue);
+}
+
+/* Drop Over Existing Video Pop-Up Modal */
+.drop-action-summary {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-primary);
+}
+
+.drop-action-warn {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: var(--accent-amber-soft);
+  border: 1px solid var(--accent-amber);
+  color: var(--accent-amber);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.drop-action-warn .material-symbols-rounded {
+  font-size: 18px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.drop-action-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--accent-blue-soft);
+  border: 1px solid var(--accent-blue);
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.drop-action-note .material-symbols-rounded {
+  font-size: 17px;
+  color: var(--accent-blue);
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.drop-action-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.drop-choice-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+
+.drop-choice-btn:hover {
+  border-color: var(--accent-blue);
+  background: var(--accent-blue-soft);
+}
+
+.drop-choice-btn.primary {
+  border-color: var(--accent-blue);
+  background: var(--accent-blue-soft);
+}
+
+.drop-choice-btn .material-symbols-rounded {
+  font-size: 20px;
+  color: var(--accent-blue);
+  flex-shrink: 0;
+}
+
+.drop-choice-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.drop-choice-text strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.drop-choice-text small {
+  font-size: 11.5px;
+  color: var(--text-secondary);
 }
